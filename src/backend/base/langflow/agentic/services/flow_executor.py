@@ -199,9 +199,31 @@ async def execute_flow_file_streaming(
     except CustomComponentValidationError as e:
         logger.error(f"Flow preparation error: {e}")
         raise HTTPException(status_code=400, detail=str(e)) from e
-    except (json.JSONDecodeError, OSError, ValueError) as e:
+    except OSError as e:
+        # OSError messages tend to embed absolute filesystem paths
+        # ("[Errno 2] No such file or directory: '/srv/langflow/flows/...'")
+        # which leak server layout to end users on multi-tenant deploys.
+        # Keep the rich detail in the server log; return a generic message
+        # to the client.
+        logger.error(f"Flow preparation OSError: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail="An error occurred while preparing the flow.",
+        ) from e
+    except (json.JSONDecodeError, ValueError) as e:
+        # Include the underlying error message in the HTTP detail so the UI
+        # surfaces something actionable. The generic "An error occurred while
+        # preparing the flow." string hid the real failure (e.g. the torch
+        # partial-init AttributeError that `validate.create_class` re-raises
+        # as a ValueError), forcing users to dig through server logs to find
+        # the cause. ValueError messages from validate.py and JSONDecodeError
+        # already include curated, user-safe content (no filesystem paths);
+        # passing them through is safe.
         logger.error(f"Flow preparation error: {e}")
-        raise HTTPException(status_code=500, detail="An error occurred while preparing the flow.") from e
+        raise HTTPException(
+            status_code=500,
+            detail=f"An error occurred while preparing the flow: {e}",
+        ) from e
 
     event_queue: asyncio.Queue[tuple[str, bytes, float] | None] = asyncio.Queue(maxsize=STREAMING_QUEUE_MAX_SIZE)
     event_manager = create_default_event_manager(event_queue)

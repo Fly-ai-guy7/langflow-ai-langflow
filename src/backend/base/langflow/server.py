@@ -70,6 +70,7 @@ class LangflowApplication(BaseApplication):
         self.options["worker_class"] = "langflow.server.LangflowUvicornWorker"
         self.options["logger_class"] = Logger
         self.options["pre_fork"] = self.pre_fork
+        self.options["post_fork"] = _langflow_post_fork
         self._app_factory = app_factory
         self.application = None
         super().__init__()
@@ -166,3 +167,47 @@ class LangflowApplication(BaseApplication):
 
                 preload_master()
         return self.application
+
+
+def _langflow_post_fork(server, worker) -> None:  # noqa: ARG001
+    """Reset fork-unsafe resources in each worker after gunicorn forks.
+
+    Gunicorn calls this hook synchronously in the worker process immediately
+    after fork, before any request is served. No event loop exists yet here —
+    this function MUST remain fully synchronous.
+
+    Resets:
+    - ``TelemetryService.client`` (an ``httpx.AsyncClient`` constructed during
+      master preload) so ``TelemetryService.start()`` can reconstruct it inside
+      the worker's event loop. ``httpx.AsyncClient`` has no synchronous
+      ``.close()``, so replacing the reference is the correct pattern.
+    - ``component_cache._lock`` (an ``asyncio.Lock`` lazily created in the
+      master and bound to the master's event-loop policy). After fork the
+      inherited Lock references a dead loop; the next acquirer in the worker
+      would either deadlock or trip a "Future bound to a different loop"
+      error. Clearing it forces the property to rebuild a fresh Lock against
+      the worker's loop on first access.
+    """
+    try:
+        from langflow.services.deps import get_telemetry_service
+
+        get_telemetry_service().client = None
+    except Exception:  # noqa: BLE001
+        # Service not yet initialized (e.g. preload_app=False path). The
+        # hook must not crash gunicorn, but the failure is worth knowing about.
+        server.log.warning(
+            "[post_fork] Failed to reset TelemetryService.client; worker telemetry may fail on first use",
+            exc_info=True,
+        )
+
+    try:
+        from lfx.interface.components import component_cache
+
+        component_cache._lock = None  # noqa: SLF001
+    except Exception:  # noqa: BLE001
+        # Module not importable in this worker for any reason — non-fatal,
+        # but log so operators can diagnose deployment issues.
+        server.log.warning(
+            "[post_fork] Failed to reset component_cache._lock; worker may inherit stale asyncio.Lock from master",
+            exc_info=True,
+        )

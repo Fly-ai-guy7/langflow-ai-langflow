@@ -164,6 +164,7 @@ def get_lifespan(*, fix_migration=False, version=None):
         sync_flows_from_fs_task = None
         mcp_init_task = None
         models_dev_refresh_task = None
+        temp_dirs: list = []
 
         try:
             start_time = asyncio.get_event_loop().time()
