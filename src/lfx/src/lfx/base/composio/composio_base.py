@@ -8,6 +8,7 @@ from composio import Composio
 from composio_langchain import LangchainProvider
 from langchain_core.tools import Tool
 
+from lfx.base.composio.schema_utils import sanitize_tools_with_fallback
 from lfx.base.mcp.util import create_input_schema_from_json_schema
 from lfx.custom.custom_component.component import Component
 from lfx.inputs.inputs import (
@@ -2353,9 +2354,11 @@ class ComposioBaseComponent(Component):
         if limit is None:
             limit = 999
 
-        tools = composio.tools.get(user_id=self.entity_id, toolkits=[self.app_name.lower()], limit=limit)
+        tools = list(composio.tools.get(user_id=self.entity_id, toolkits=[self.app_name.lower()], limit=limit))
+        sanitized_tools, excluded_summary = sanitize_tools_with_fallback(tools, logger.debug)
+        failure_count = len(tools) - len(sanitized_tools)
         configured_tools = []
-        for tool in tools:
+        for tool in sanitized_tools:
             # Set the sanitized name
             display_name = self._actions_data.get(tool.name, {}).get(
                 "display_name", self._sanitized_names.get(tool.name, self._name_sanitizer.sub("-", tool.name))
@@ -2364,6 +2367,12 @@ class ComposioBaseComponent(Component):
             tool.tags = [tool.name]
             tool.metadata = {"display_name": display_name, "display_description": tool.description, "readonly": True}
             configured_tools.append(tool)
+        if failure_count > 0:
+            logger.warning(
+                "Excluded %d tool(s) due to args schema sanitization failures: %s",
+                failure_count,
+                excluded_summary,
+            )
         return configured_tools
 
     async def _get_tools(self) -> list[Tool]:
