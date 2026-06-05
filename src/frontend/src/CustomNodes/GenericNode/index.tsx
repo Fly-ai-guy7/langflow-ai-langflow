@@ -7,11 +7,24 @@ import { useShallow } from "zustand/react/shallow";
 import ForwardedIconComponent from "@/components/common/genericIconComponent";
 import { usePostValidateComponentCode } from "@/controllers/API/queries/nodes/use-post-validate-component-code";
 import { CustomNodeStatus } from "@/customization/components/custom-NodeStatus";
+import { buildCollaborationSelectionOutline } from "@/hooks/flows/collaboration-user-color";
+import {
+  buildDeleteNodeFieldUpdate,
+  buildSetNodeFieldUpdate,
+} from "@/hooks/flows/flow-operation-diff";
+import { useNodeCollaborationParticipants } from "@/hooks/flows/use-node-collaboration-participants";
 import UpdateComponentModal from "@/modals/updateComponentModal";
 import { useAlternate } from "@/shared/hooks/use-alternate";
 import type { FlowStoreType } from "@/types/zustand/flow";
 import { Button } from "../../components/ui/button";
 import { ICON_STROKE_WIDTH } from "../../constants/constants";
+import CollaborationSelectionBump from "../../pages/FlowPage/components/CollaborationSelectionBump";
+import NodeSelectionChrome from "../../pages/FlowPage/components/NodeSelectionChrome";
+import {
+  NODE_SELECTION_CHROME_BUMP_SLOT_CLASS,
+  NODE_SELECTION_CHROME_ROW_CLASS,
+  NODE_SELECTION_CHROME_TOP_CLASS,
+} from "../../pages/FlowPage/components/NodeSelectionChrome/constants";
 import NodeToolbarComponent from "../../pages/FlowPage/components/nodeToolbarComponent";
 import { useChangeOnUnfocus } from "../../shared/hooks/use-change-on-unfocus";
 import useAlertStore from "../../stores/alertStore";
@@ -67,9 +80,11 @@ const _HiddenOutputsButton = memo(
 );
 
 function GenericNode({
+  id,
   data,
   selected,
 }: {
+  id?: string;
   data: NodeDataType;
   selected?: boolean;
   xPos?: number;
@@ -82,6 +97,7 @@ function GenericNode({
   const [_validationStatus, setValidationStatus] =
     useState<VertexBuildTypeAPI | null>(null);
   const [openUpdateModal, setOpenUpdateModal] = useState(false);
+  const nodeId = id ?? data.id;
 
   const types = useTypesStore((state) => state.types);
   const templates = useTypesStore((state) => state.templates);
@@ -317,35 +333,70 @@ function GenericNode({
         });
       });
 
-      setNode(data.id, (oldNode) => {
-        const newNode = cloneDeep(oldNode);
-        if (newNode.data.node?.outputs) {
-          newNode.data.node.outputs.forEach((out) => {
-            if (out.selected) {
-              out.selected = undefined;
-            }
-          });
+      const outputIndex =
+        data.node?.outputs?.findIndex((o) => o.name === output.name) ?? -1;
+      const outputTypes = output.types || [];
+      const defaultType = outputTypes.length > 0 ? outputTypes[0] : undefined;
+      const selectedValue = output.selected ?? defaultType;
+      const collaborationUpdates =
+        data.node?.outputs?.flatMap((out, index) =>
+          out.selected
+            ? [
+                buildDeleteNodeFieldUpdate(data.id, [
+                  "data",
+                  "node",
+                  "outputs",
+                  index,
+                  "selected",
+                ]),
+              ]
+            : [],
+        ) ?? [];
+      if (outputIndex !== -1 && selectedValue !== undefined) {
+        collaborationUpdates.push(
+          buildSetNodeFieldUpdate(
+            data.id,
+            ["data", "node", "outputs", outputIndex, "selected"],
+            selectedValue,
+          ),
+        );
+        collaborationUpdates.push(
+          buildSetNodeFieldUpdate(
+            data.id,
+            ["data", "selected_output"],
+            output.name,
+          ),
+        );
+      }
 
-          const outputIndex = newNode.data.node.outputs.findIndex(
-            (o) => o.name === output.name,
-          );
-          if (outputIndex !== -1) {
-            const outputTypes = output.types || [];
-            const defaultType =
-              outputTypes.length > 0 ? outputTypes[0] : undefined;
-            newNode.data.node.outputs[outputIndex].selected =
-              output.selected ?? defaultType;
+      setNode(
+        data.id,
+        (oldNode) => {
+          const newNode = cloneDeep(oldNode);
+          if (newNode.data.node?.outputs) {
+            newNode.data.node.outputs.forEach((out) => {
+              if (out.selected) {
+                out.selected = undefined;
+              }
+            });
+
+            if (outputIndex !== -1) {
+              newNode.data.node.outputs[outputIndex].selected = selectedValue;
+            }
+
+            const selectedOutput = newNode.data.node.outputs[outputIndex]?.name;
+            (newNode.data as NodeDataType).selected_output = selectedOutput;
           }
 
-          const selectedOutput = newNode.data.node.outputs[outputIndex]?.name;
-          (newNode.data as NodeDataType).selected_output = selectedOutput;
-        }
-
-        return newNode;
-      });
+          return newNode;
+        },
+        true,
+        undefined,
+        { collaborationUpdates },
+      );
       updateNodeInternals(data.id);
     },
-    [data.id, setNode, setEdges, updateNodeInternals],
+    [data.id, data.node?.outputs, setNode, setEdges, updateNodeInternals],
   );
 
   useEffect(() => {
@@ -390,6 +441,24 @@ function GenericNode({
   }, [selected]);
 
   const rightClickedNodeId = useFlowStore((state) => state.rightClickedNodeId);
+  const isRightClicked = rightClickedNodeId === nodeId;
+  const isSelectedSingle = selected && selectedNodesCount === 1;
+  const shouldShowToolbar = isSelectedSingle || isRightClicked;
+  const collaborationSelectionParticipants =
+    useNodeCollaborationParticipants(nodeId);
+  const collaborationSelectionOutline = useMemo(
+    () =>
+      collaborationSelectionParticipants.length > 0
+        ? buildCollaborationSelectionOutline(
+            collaborationSelectionParticipants.map(
+              (participant) => participant.color,
+            ),
+          )
+        : undefined,
+    [collaborationSelectionParticipants],
+  );
+  const shouldShowRemoteSelectionBump =
+    collaborationSelectionParticipants.length > 0 && !shouldShowToolbar;
 
   const shouldShowUpdateComponent = useMemo(
     () =>
@@ -412,18 +481,10 @@ function GenericNode({
   );
 
   const memoizedNodeToolbarComponent = useMemo(() => {
-    const isRightClicked = rightClickedNodeId === data.id;
-    const isSelectedSingle = selected && selectedNodesCount === 1;
-    const shouldShowToolbar = isSelectedSingle || isRightClicked;
-
     return shouldShowToolbar ? (
-      <>
-        <div
-          className={cn(
-            "absolute -top-12 left-1/2 z-50 -translate-x-1/2",
-            "transform transition-all duration-300 ease-out",
-          )}
-        >
+      <NodeSelectionChrome
+        nodeId={nodeId}
+        toolbar={
           <NodeToolbarComponent
             data={data}
             deleteNode={(id) => {
@@ -431,10 +492,24 @@ function GenericNode({
               deleteNode(id);
             }}
             setShowNode={(show) => {
-              setNode(data.id, (old) => ({
-                ...old,
-                data: { ...old.data, showNode: show },
-              }));
+              setNode(
+                data.id,
+                (old) => ({
+                  ...old,
+                  data: { ...old.data, showNode: show },
+                }),
+                true,
+                undefined,
+                {
+                  collaborationUpdates: [
+                    buildSetNodeFieldUpdate(
+                      data.id,
+                      ["data", "showNode"],
+                      show,
+                    ),
+                  ],
+                },
+              );
             }}
             numberOfOutputHandles={shownOutputs.length ?? 0}
             showNode={showNode}
@@ -446,8 +521,8 @@ function GenericNode({
             hasBreakingChange={hasBreakingChange}
             openDropdownOnRightClick={isRightClicked}
           />
-        </div>
-        <div className="-z-10">
+        }
+        trailing={
           <Button
             unstyled
             onClick={() => {
@@ -455,11 +530,7 @@ function GenericNode({
               setHasChangedNodeDescription(false);
             }}
             className={cn(
-              "nodrag absolute left-1/2 z-50 flex h-6 w-6 cursor-pointer items-center justify-center rounded-md",
-              "transform transition-all duration-300 ease-out",
-              showNode
-                ? "top-2 translate-x-[10.4rem]"
-                : "top-0 translate-x-[6.4rem]",
+              "nodrag flex h-6 w-6 cursor-pointer items-center justify-center rounded-md",
               editedNameDescription
                 ? "bg-accent-emerald"
                 : "bg-zinc-foreground",
@@ -481,8 +552,8 @@ function GenericNode({
               )}
             />
           </Button>
-        </div>
-      </>
+        }
+      />
     ) : (
       <></>
     );
@@ -502,6 +573,9 @@ function GenericNode({
     toggleEditNameDescription,
     selectedNodesCount,
     rightClickedNodeId,
+    isRightClicked,
+    shouldShowToolbar,
+    nodeId,
   ]);
   useEffect(() => {
     if (hiddenOutputs && hiddenOutputs.length === 0) {
@@ -536,6 +610,11 @@ function GenericNode({
           "generic-node-div group/node relative rounded-xl border shadow-sm hover:shadow-md",
           !hasOutputs && "pb-4",
         )}
+        style={
+          collaborationSelectionOutline
+            ? { boxShadow: collaborationSelectionOutline }
+            : undefined
+        }
       >
         {openUpdateModal && (
           <UpdateComponentModal
@@ -546,6 +625,21 @@ function GenericNode({
           />
         )}
         {memoizedNodeToolbarComponent}
+        {shouldShowRemoteSelectionBump ? (
+          <div
+            className={cn(
+              NODE_SELECTION_CHROME_ROW_CLASS,
+              NODE_SELECTION_CHROME_TOP_CLASS,
+              "z-[60]",
+            )}
+          >
+            <div className={NODE_SELECTION_CHROME_BUMP_SLOT_CLASS}>
+              <CollaborationSelectionBump
+                participants={collaborationSelectionParticipants}
+              />
+            </div>
+          </div>
+        ) : null}
         {shouldShowUpdateComponent ? (
           <NodeUpdateComponent
             hasBreakingChange={hasBreakingChange}

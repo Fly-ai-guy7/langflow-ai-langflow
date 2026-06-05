@@ -23,7 +23,7 @@ from langflow.services.schema import ServiceType
 from .deps import get_auth_service, get_db_service, get_service, get_settings_service, session_scope
 
 if TYPE_CHECKING:
-    from lfx.services.settings.manager import SettingsService
+    from lfx.services.settings.service import SettingsService
     from sqlmodel.ext.asyncio.session import AsyncSession
 
 
@@ -487,6 +487,7 @@ def register_all_service_factories() -> None:
     from lfx.services.schema import ServiceType
 
     service_manager = get_service_manager()
+    from lfx.services.flow_operations import factory as flow_operations_factory
     from lfx.services.mcp_composer import factory as mcp_composer_factory
     from lfx.services.settings import factory as settings_factory
 
@@ -496,6 +497,7 @@ def register_all_service_factories() -> None:
     from langflow.services.authorization.service import LangflowAuthorizationService
     from langflow.services.cache import factory as cache_factory
     from langflow.services.chat import factory as chat_factory
+    from langflow.services.collaboration_events import factory as collaboration_events_factory
     from langflow.services.database import factory as database_factory
     from langflow.services.job_queue import factory as job_queue_factory
     from langflow.services.session import factory as session_factory
@@ -521,6 +523,8 @@ def register_all_service_factories() -> None:
     service_manager.register_factory(tracing_factory.TracingServiceFactory())
     service_manager.register_factory(transaction_factory.TransactionServiceFactory())
     service_manager.register_factory(state_factory.StateServiceFactory())
+    service_manager.register_factory(flow_operations_factory.FlowOperationServiceFactory())
+    service_manager.register_factory(collaboration_events_factory.CollaborationEventServiceFactory())
     service_manager.register_factory(job_queue_factory.JobQueueServiceFactory())
     service_manager.register_factory(task_factory.TaskServiceFactory())
     service_manager.register_factory(store_factory.StoreServiceFactory())

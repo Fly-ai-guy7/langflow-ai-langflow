@@ -1,0 +1,367 @@
+"""WebSocket protocol runner for collaborative flow editing."""
+
+from __future__ import annotations
+
+from typing import TYPE_CHECKING, Any
+from uuid import UUID
+
+from fastapi import status
+from lfx.log.logger import logger
+from lfx.services.deps import session_scope_readonly
+from pydantic import ValidationError
+from starlette.websockets import WebSocketDisconnect
+
+from langflow.api.utils.collab.access import (
+    FlowCollaborationAccessError,
+    ensure_operation_write_permission,
+    validate_flow_access,
+)
+from langflow.api.utils.collab.operations import (
+    AcceptedFlowOperation,
+    FlowOperationApplyError,
+    apply_flow_operation_batch,
+)
+from langflow.api.v1.collaboration_manager import (
+    WORKER_ID,
+    CollaborationConnectionLimitExceededError,
+    get_collaboration_manager,
+    start_collaboration_background_tasks,
+)
+from langflow.api.v1.schemas.flow_collaboration import (
+    CollaborationHeartbeatPongMessage,
+    CollaborationOperationAcceptedMessage,
+    CollaborationOperationBroadcastMessage,
+    CollaborationOperationRejectedMessage,
+    CollaborationOperationSubmitMessage,
+    CollaborationSelectionUpdateMessage,
+    CollaborationSessionReadyMessage,
+    CollaborationSessionStartMessage,
+    CollaborationUnknownMessageError,
+)
+from langflow.services.collaboration_events.schemas import (
+    CollaborationPresenceChange,
+)
+from langflow.services.database.models.user.model import UserRead
+from langflow.services.deps import get_collaboration_events_service, get_settings_service, session_scope
+
+if TYPE_CHECKING:
+    from starlette.websockets import WebSocket
+
+    from langflow.services.storage.service import StorageService
+
+
+class _CollaborationConnectionClosedError(Exception):
+    """Raised after this connection has already closed its websocket."""
+
+
+class FlowCollaborationConnection:
+    """Owns one accepted collaboration websocket connection."""
+
+    def __init__(
+        self,
+        *,
+        websocket: WebSocket,
+        flow_id: UUID,
+        current_user: UserRead,
+        storage_service: StorageService,
+    ) -> None:
+        self.websocket = websocket
+        self.flow_id = flow_id
+        self.current_user = current_user
+        self.storage_service = storage_service
+        self.manager = get_collaboration_manager()
+        self._registered_connection_id: UUID | None = None
+        self._event_service = get_collaboration_events_service()
+
+    @property
+    def connection_id(self) -> UUID:
+        if self._registered_connection_id is None:
+            msg = "Collaboration connection used before session.start registration"
+            raise RuntimeError(msg)
+        return self._registered_connection_id
+
+    async def run(self, *, starting_revision: int) -> None:
+        try:
+            await self._receive_messages(starting_revision=starting_revision)
+        except (WebSocketDisconnect, _CollaborationConnectionClosedError):
+            pass
+        except Exception:  # noqa: BLE001
+            await logger.aexception("Collaboration websocket error for flow %s", self.flow_id)
+        finally:
+            await self._cleanup()
+
+    async def _receive_messages(self, *, starting_revision: int) -> None:
+        raw = await self.websocket.receive_json()
+        msg_type = raw.get("type") if isinstance(raw, dict) else None
+        await self._handle_session_start(raw, msg_type, starting_revision=starting_revision)
+
+        while True:
+            raw = await self.websocket.receive_json()
+            msg_type = raw.get("type") if isinstance(raw, dict) else None
+
+            await self._ensure_active_read_access()
+
+            if msg_type == "operation.submit":
+                await self._handle_operation_submit(raw)
+                continue
+
+            if msg_type == "selection.update":
+                await self._handle_selection_update(raw)
+                continue
+
+            if msg_type == "heartbeat.pong":
+                await self._handle_heartbeat_pong(raw)
+                continue
+
+            await self.websocket.send_json(CollaborationUnknownMessageError().model_dump(mode="json"))
+
+    async def _handle_session_start(self, raw: Any, msg_type: str | None, *, starting_revision: int) -> None:
+        if msg_type != "session.start":
+            await self.websocket.close(
+                code=status.WS_1008_POLICY_VIOLATION,
+                reason="First message must be session.start",
+            )
+            raise _CollaborationConnectionClosedError
+
+        try:
+            CollaborationSessionStartMessage.model_validate(raw)
+        except ValidationError as exc:
+            await self.websocket.close(
+                code=status.WS_1008_POLICY_VIOLATION,
+                reason="Invalid session.start payload",
+            )
+            raise _CollaborationConnectionClosedError from exc
+
+        try:
+            connection_id = await self.manager.register(
+                websocket=self.websocket,
+                flow_id=self.flow_id,
+                user_id=self.current_user.id,
+                username=self.current_user.username,
+                profile_image=self.current_user.profile_image,
+                max_connections=get_settings_service().settings.collaboration_max_connections,
+            )
+        except CollaborationConnectionLimitExceededError as exc:
+            await self.websocket.close(code=status.WS_1013_TRY_AGAIN_LATER, reason=str(exc))
+            await logger.awarning("Collaboration connection limit exceeded for flow %s: %s", self.flow_id, exc)
+            raise _CollaborationConnectionClosedError from exc
+        self._registered_connection_id = connection_id
+        await logger.ainfo(
+            "Collaboration session started for flow %s by user %s (connection_id: %s)",
+            self.flow_id,
+            self.current_user.id,
+            connection_id,
+        )
+        await start_collaboration_background_tasks()
+
+        presence_change = await self._event_service.add_connection(
+            flow_id=self.flow_id,
+            user_id=self.current_user.id,
+            connection_id=connection_id,
+            username=self.current_user.username,
+            profile_image=self.current_user.profile_image,
+        )
+        snapshot = (await self._event_service.list_users([self.flow_id]))[self.flow_id]
+
+        await self.websocket.send_json(
+            CollaborationSessionReadyMessage(
+                connection_id=connection_id,
+                flow_id=self.flow_id,
+                current_revision=starting_revision,
+            ).model_dump(mode="json")
+        )
+        await self.websocket.send_json(self.manager.presence_snapshot_message(snapshot))
+
+        await self._emit_presence_change(presence_change, exclude_connection_id=connection_id)
+
+    async def _handle_operation_submit(self, raw: Any) -> None:
+        try:
+            submit = CollaborationOperationSubmitMessage.model_validate(raw)
+        except ValidationError as exc:
+            await logger.awarning("Invalid operation submit payload for flow %s: %s", self.flow_id, exc)
+            await self._send_operation_rejected(
+                request_id=raw.get("request_id") if isinstance(raw, dict) else None,
+                status_code=400,
+                detail=str(exc),
+            )
+            return
+
+        try:
+            accepted = await self._apply_operation(submit)
+        except FlowOperationApplyError as exc:
+            await logger.awarning("Operation rejected for flow %s: %s", self.flow_id, exc.detail)
+            await self._send_operation_rejected(
+                request_id=submit.request_id,
+                status_code=exc.status_code,
+                detail=exc.detail,
+                current_revision=exc.current_revision,
+            )
+            return
+
+        await logger.adebug("Operation accepted for flow %s (revision: %s)", self.flow_id, accepted.revision)
+        await self._send_operation_accepted(submit.request_id, accepted)
+        await self._broadcast_operation(accepted)
+        await self._publish_operation_accepted(accepted)
+
+    async def _apply_operation(
+        self,
+        submit: CollaborationOperationSubmitMessage,
+    ) -> AcceptedFlowOperation:
+        async with session_scope() as operation_session:
+            await ensure_operation_write_permission(
+                operation_session,
+                self.flow_id,
+                self.current_user,
+            )
+
+            return await apply_flow_operation_batch(
+                operation_session,
+                flow_id=self.flow_id,
+                actor_user_id=self.current_user.id,
+                base_revision=submit.base_revision,
+                operations=submit.operations,
+                storage_service=self.storage_service,
+            )
+
+    async def _ensure_active_read_access(self) -> None:
+        try:
+            async with session_scope_readonly() as session:
+                await validate_flow_access(
+                    session,
+                    self.flow_id,
+                    self.current_user,
+                )
+        except FlowCollaborationAccessError as exc:
+            await self.websocket.close(code=status.WS_1008_POLICY_VIOLATION, reason=exc.detail)
+            raise _CollaborationConnectionClosedError from exc
+
+    async def _send_operation_accepted(
+        self,
+        request_id: str,
+        accepted: AcceptedFlowOperation,
+    ) -> None:
+        accepted_msg = CollaborationOperationAcceptedMessage(
+            request_id=request_id,
+            flow_id=accepted.flow_id,
+            revision=accepted.revision,
+            actor_user_id=accepted.actor_user_id,
+            forward_ops=accepted.forward_ops,
+            created_at=accepted.created_at,
+        )
+        await self.websocket.send_json(accepted_msg.model_dump(mode="json"))
+
+    async def _send_operation_rejected(
+        self,
+        *,
+        request_id: str | None,
+        status_code: int,
+        detail: str,
+        current_revision: int | None = None,
+    ) -> None:
+        await self.websocket.send_json(
+            CollaborationOperationRejectedMessage(
+                request_id=request_id,
+                status=status_code,
+                detail=detail,
+                current_revision=current_revision,
+            ).model_dump(mode="json")
+        )
+
+    async def _broadcast_operation(self, accepted: AcceptedFlowOperation) -> None:
+        broadcast = CollaborationOperationBroadcastMessage(
+            flow_id=accepted.flow_id,
+            revision=accepted.revision,
+            actor_user_id=accepted.actor_user_id,
+            forward_ops=accepted.forward_ops,
+            created_at=accepted.created_at,
+        )
+        await self.manager.broadcast_json(
+            self.flow_id,
+            broadcast.model_dump(mode="json"),
+            exclude_connection_id=self.connection_id,
+        )
+
+    async def _publish_operation_accepted(self, accepted: AcceptedFlowOperation) -> None:
+        event_payload = {
+            "worker_id": WORKER_ID,
+            "revision": accepted.revision,
+            "actor_user_id": str(accepted.actor_user_id),
+            "forward_ops": accepted.forward_ops,
+            "created_at": accepted.created_at.isoformat(),
+        }
+        await self._event_service.publish(self.flow_id, "operation.accepted", event_payload)
+
+    async def _handle_selection_update(self, raw: Any) -> None:
+        try:
+            update = CollaborationSelectionUpdateMessage.model_validate(raw)
+        except ValidationError as exc:
+            await self.websocket.send_json(
+                CollaborationUnknownMessageError(
+                    detail=f"Invalid selection.update payload: {exc}",
+                ).model_dump(mode="json")
+            )
+            return
+
+        connection_id = self.connection_id
+        change = await self._event_service.update_connection(
+            connection_id=connection_id,
+            selected=update.selected,
+        )
+        await self._emit_selection_change(change, exclude_connection_id=connection_id)
+
+    async def _handle_heartbeat_pong(self, raw: Any) -> None:
+        try:
+            CollaborationHeartbeatPongMessage.model_validate(raw)
+        except ValidationError:
+            return
+
+        try:
+            await self._ensure_active_read_access()
+        except _CollaborationConnectionClosedError:
+            return
+
+        connection_id = self.connection_id
+        await self.manager.handle_heartbeat_pong(
+            self.flow_id,
+            connection_id,
+            self._event_service,
+        )
+
+    async def _cleanup(self) -> None:
+        if self._registered_connection_id is not None:
+            await logger.ainfo(
+                "Collaboration connection closed for flow %s (connection_id: %s)",
+                self.flow_id,
+                self._registered_connection_id,
+            )
+            await self.manager.unregister(self._registered_connection_id)
+            change = await self._event_service.remove_connection(
+                connection_id=self._registered_connection_id,
+            )
+            await self._emit_presence_change(change)
+
+    async def _emit_presence_change(
+        self,
+        change: CollaborationPresenceChange | None,
+        *,
+        exclude_connection_id: UUID | None = None,
+    ) -> None:
+        await self.manager.emit_presence_change(
+            self.flow_id,
+            change,
+            self._event_service,
+            exclude_connection_id=exclude_connection_id,
+        )
+
+    async def _emit_selection_change(
+        self,
+        change: CollaborationPresenceChange | None,
+        *,
+        exclude_connection_id: UUID | None = None,
+    ) -> None:
+        await self.manager.emit_selection_change(
+            self.flow_id,
+            change,
+            self._event_service,
+            exclude_connection_id=exclude_connection_id,
+        )

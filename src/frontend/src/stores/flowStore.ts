@@ -19,6 +19,13 @@ import {
   trackDataLoaded,
   trackFlowBuild,
 } from "@/customization/utils/analytics";
+import type { FlowMutationOptions } from "@/hooks/flows/flow-operation-adapter";
+import {
+  buildGraphDiffOperations,
+  buildInverseFlowOperations,
+  buildUpdateNodeFieldsOperation,
+  coalesceDeleteIds,
+} from "@/hooks/flows/flow-operation-diff";
 import { brokenEdgeMessage } from "@/utils/utils";
 import { BuildStatus, EventDeliveryType } from "../constants/enums";
 import i18n from "../i18n";
@@ -31,6 +38,7 @@ import type {
   sourceHandleType,
   targetHandleType,
 } from "../types/flow";
+import type { FlowOperation } from "../types/flow-operations";
 import type {
   ComponentsToUpdateType,
   FlowStoreType,
@@ -111,6 +119,34 @@ export async function waitForNodeUpdates(
   }
 }
 
+function buildCollaborationOperations(
+  prevNodes: AllNodeType[],
+  prevEdges: EdgeType[],
+  nextNodes: AllNodeType[],
+  nextEdges: EdgeType[],
+  options?: FlowMutationOptions,
+): FlowOperation[] {
+  const updateNodeFieldsOperation = buildUpdateNodeFieldsOperation(
+    options?.collaborationUpdates ?? [],
+  );
+  if (!updateNodeFieldsOperation) {
+    return buildGraphDiffOperations(prevNodes, prevEdges, nextNodes, nextEdges);
+  }
+
+  const operations: FlowOperation[] = [updateNodeFieldsOperation];
+  const nextEdgeIds = new Set(nextEdges.map((edge) => edge.id));
+  const deletedEdgeIds = prevEdges
+    .filter((edge) => !nextEdgeIds.has(edge.id))
+    .map((edge) => edge.id);
+  if (deletedEdgeIds.length > 0) {
+    operations.push({
+      type: "delete_edges",
+      ids: coalesceDeleteIds(deletedEdgeIds),
+    });
+  }
+  return operations;
+}
+
 // this is our useStore hook that we can use in our components to get parts of the store and call actions
 const useFlowStore = create<FlowStoreType>((set, get) => ({
   playgroundPage: false,
@@ -136,6 +172,12 @@ const useFlowStore = create<FlowStoreType>((set, get) => ({
     }
   },
   autoSaveFlow: undefined,
+  collaborationOperationMode: false,
+  isApplyingRemoteOperations: false,
+  onCollaborationOperations: undefined,
+  undoCollaborationOperations: undefined,
+  redoCollaborationOperations: undefined,
+  flushCollaborationSave: undefined,
   componentsToUpdate: [],
   setComponentsToUpdate: (change) => {
     const newChange =
@@ -408,7 +450,12 @@ const useFlowStore = create<FlowStoreType>((set, get) => ({
       edges: applyEdgeChanges(changes, get().edges),
     });
   },
-  setNodes: (change) => {
+  setNodes: (change, options?: FlowMutationOptions) => {
+    const prevNodes = get().nodes;
+    const prevEdges = get().edges;
+    const prevFlowData = get().currentFlow?.data as
+      | Record<string, unknown>
+      | undefined;
     const newChange =
       typeof change === "function" ? change(get().nodes) : change;
     const { edges: newEdges } = cleanEdges(newChange, get().edges);
@@ -423,11 +470,42 @@ const useFlowStore = create<FlowStoreType>((set, get) => ({
       hasIO: inputs.length > 0 || outputs.length > 0,
     });
     get().updateCurrentFlow({ nodes: newChange, edges: newEdges });
-    if (get().autoSaveFlow) {
+    if (
+      get().collaborationOperationMode &&
+      !get().isApplyingRemoteOperations &&
+      !options?.skipCollaborationEmit
+    ) {
+      const operations = buildCollaborationOperations(
+        prevNodes,
+        prevEdges,
+        newChange,
+        newEdges,
+        options,
+      );
+      if (operations.length > 0) {
+        get().onCollaborationOperations?.(operations, {
+          historyEntry: {
+            forwardOps: cloneDeep(operations),
+            inverseOps: buildInverseFlowOperations(
+              prevNodes,
+              prevEdges,
+              prevFlowData,
+              operations,
+            ),
+          },
+        });
+      }
+    }
+    if (get().autoSaveFlow && !get().collaborationOperationMode) {
       get().autoSaveFlow!();
     }
   },
-  setEdges: (change) => {
+  setEdges: (change, options?: FlowMutationOptions) => {
+    const prevNodes = get().nodes;
+    const prevEdges = get().edges;
+    const prevFlowData = get().currentFlow?.data as
+      | Record<string, unknown>
+      | undefined;
     const newChange =
       typeof change === "function" ? change(get().edges) : change;
     set({
@@ -435,7 +513,33 @@ const useFlowStore = create<FlowStoreType>((set, get) => ({
       flowState: undefined,
     });
     get().updateCurrentFlow({ edges: newChange });
-    if (get().autoSaveFlow) {
+    if (
+      get().collaborationOperationMode &&
+      !get().isApplyingRemoteOperations &&
+      !options?.skipCollaborationEmit
+    ) {
+      const operations = buildCollaborationOperations(
+        prevNodes,
+        prevEdges,
+        get().nodes,
+        newChange,
+        options,
+      );
+      if (operations.length > 0) {
+        get().onCollaborationOperations?.(operations, {
+          historyEntry: {
+            forwardOps: cloneDeep(operations),
+            inverseOps: buildInverseFlowOperations(
+              prevNodes,
+              prevEdges,
+              prevFlowData,
+              operations,
+            ),
+          },
+        });
+      }
+    }
+    if (get().autoSaveFlow && !get().collaborationOperationMode) {
       get().autoSaveFlow!();
     }
   },
@@ -444,10 +548,17 @@ const useFlowStore = create<FlowStoreType>((set, get) => ({
     change: AllNodeType | ((oldState: AllNodeType) => AllNodeType),
     isUserChange: boolean = true,
     callback?: () => void,
+    options?: FlowMutationOptions,
   ) => {
     if (!get().nodes.find((node) => node.id === id)) {
       throw new Error("Node not found");
     }
+
+    const prevNodes = get().nodes;
+    const prevEdges = get().edges;
+    const prevFlowData = get().currentFlow?.data as
+      | Record<string, unknown>
+      | undefined;
 
     const newChange =
       typeof change === "function"
@@ -480,14 +591,40 @@ const useFlowStore = create<FlowStoreType>((set, get) => ({
       };
     });
     get().updateCurrentFlow({ nodes: newNodes, edges: newEdges });
-    if (get().autoSaveFlow) {
+    if (
+      get().collaborationOperationMode &&
+      !get().isApplyingRemoteOperations &&
+      !options?.skipCollaborationEmit
+    ) {
+      const operations = buildCollaborationOperations(
+        prevNodes,
+        prevEdges,
+        newNodes,
+        newEdges,
+        options,
+      );
+      if (operations.length > 0) {
+        get().onCollaborationOperations?.(operations, {
+          historyEntry: {
+            forwardOps: cloneDeep(operations),
+            inverseOps: buildInverseFlowOperations(
+              prevNodes,
+              prevEdges,
+              prevFlowData,
+              operations,
+            ),
+          },
+        });
+      }
+    }
+    if (get().autoSaveFlow && !get().collaborationOperationMode) {
       get().autoSaveFlow!();
     }
   },
   getNode: (id: string) => {
     return get().nodes.find((node) => node.id === id);
   },
-  deleteNode: (nodeId) => {
+  deleteNode: (nodeId, options?: FlowMutationOptions) => {
     const { filteredNodes, deletedNode } = get().nodes.reduce<{
       filteredNodes: AllNodeType[];
       deletedNode: AllNodeType | null;
@@ -509,7 +646,7 @@ const useFlowStore = create<FlowStoreType>((set, get) => ({
       { filteredNodes: [], deletedNode: null },
     );
 
-    get().setNodes(filteredNodes);
+    get().setNodes(filteredNodes, options);
 
     // Clear rightClickedNodeId if the deleted node was right-clicked
     const rightClickedNodeId = get().rightClickedNodeId;
@@ -528,18 +665,24 @@ const useFlowStore = create<FlowStoreType>((set, get) => ({
       track("Component Deleted", { componentType: deletedNode.data.type });
     }
   },
-  deleteEdge: (edgeId) => {
+  deleteEdge: (edgeId, options?: FlowMutationOptions) => {
     get().setEdges(
       get().edges.filter((edge) =>
         typeof edgeId === "string"
           ? edge.id !== edgeId
           : !edgeId.includes(edge.id),
       ),
+      options,
     );
     track("Component Connection Deleted", { edgeId });
   },
   paste: (selection, position) => {
     if (get().currentFlow?.locked) return;
+    const prevNodes = get().nodes;
+    const prevEdges = get().edges;
+    const prevFlowData = get().currentFlow?.data as
+      | Record<string, unknown>
+      | undefined;
     // Collect IDs of nodes in the selection
     const selectedNodeIds = new Set(selection.nodes.map((node) => node.id));
     // Find existing edges in the flow that connect nodes within the selection
@@ -577,6 +720,8 @@ const useFlowStore = create<FlowStoreType>((set, get) => ({
     const idsMap = {};
     let newNodes: AllNodeType[] = get().nodes;
     let newEdges = get().edges;
+    const addedNodes: AllNodeType[] = [];
+    const addedEdges: EdgeType[] = [];
     selection.nodes.forEach((node: Node) => {
       if (node.position.y < minimumY) {
         minimumY = node.position.y;
@@ -634,11 +779,13 @@ const useFlowStore = create<FlowStoreType>((set, get) => ({
       );
 
       // Add the new node to the list of nodes in state
+      const pastedNode = { ...newNode, selected: true } as AllNodeType;
+      addedNodes.push(pastedNode);
       newNodes = newNodes
         .map((node) => ({ ...node, selected: false }))
-        .concat({ ...newNode, selected: true });
+        .concat(pastedNode);
     });
-    get().setNodes(newNodes);
+    get().setNodes(newNodes, { skipCollaborationEmit: true });
 
     selection.edges.forEach((edge: EdgeType) => {
       const source = idsMap[edge.source];
@@ -667,42 +814,95 @@ const useFlowStore = create<FlowStoreType>((set, get) => ({
       };
 
       const id = getHandleId(source, sourceHandle, target, targetHandle);
+      const pastedEdge = {
+        source,
+        target,
+        sourceHandle,
+        targetHandle,
+        id,
+        data: cloneDeep(edge.data),
+        selected: false,
+      } as EdgeType;
+      addedEdges.push(pastedEdge);
       newEdges = addEdge(
-        {
-          source,
-          target,
-          sourceHandle,
-          targetHandle,
-          id,
-          data: cloneDeep(edge.data),
-          selected: false,
-        },
+        pastedEdge,
         newEdges.map((edge) => ({ ...edge, selected: false })),
       );
     });
-    get().setEdges(newEdges);
+    get().setEdges(newEdges, { skipCollaborationEmit: true });
+
+    if (
+      get().collaborationOperationMode &&
+      !get().isApplyingRemoteOperations &&
+      (addedNodes.length > 0 || addedEdges.length > 0)
+    ) {
+      const operations: FlowOperation[] = [];
+      if (addedNodes.length > 0) {
+        operations.push({ type: "add_nodes", nodes: addedNodes });
+      }
+      if (addedEdges.length > 0) {
+        operations.push({ type: "add_edges", edges: addedEdges });
+      }
+      get().onCollaborationOperations?.(operations, {
+        historyEntry: {
+          forwardOps: cloneDeep(operations),
+          inverseOps: buildInverseFlowOperations(
+            prevNodes,
+            prevEdges,
+            prevFlowData,
+            operations,
+          ),
+        },
+      });
+    }
   },
   setLastCopiedSelection: (newSelection, isCrop = false) => {
     if (isCrop) {
+      const prevNodes = get().nodes;
+      const prevEdges = get().edges;
+      const prevFlowData = get().currentFlow?.data as
+        | Record<string, unknown>
+        | undefined;
       const nodesIdsSelected = newSelection!.nodes.map((node) => node.id);
       const edgesIdsSelected = newSelection!.edges.map((edge) => edge.id);
 
-      nodesIdsSelected.forEach((id) => {
-        get().deleteNode(id);
-      });
-
-      edgesIdsSelected.forEach((id) => {
-        get().deleteEdge(id);
-      });
-
-      const newNodes = get().nodes.filter(
+      const newNodes = prevNodes.filter(
         (node) => !nodesIdsSelected.includes(node.id),
       );
-      const newEdges = get().edges.filter(
-        (edge) => !edgesIdsSelected.includes(edge.id),
+      const newEdges = prevEdges.filter(
+        (edge) =>
+          !edgesIdsSelected.includes(edge.id) &&
+          !nodesIdsSelected.includes(edge.source) &&
+          !nodesIdsSelected.includes(edge.target),
       );
 
-      set({ nodes: newNodes, edges: newEdges });
+      get().setNodes(newNodes, { skipCollaborationEmit: true });
+      get().setEdges(newEdges, { skipCollaborationEmit: true });
+
+      if (
+        get().collaborationOperationMode &&
+        !get().isApplyingRemoteOperations
+      ) {
+        const operations = buildGraphDiffOperations(
+          prevNodes,
+          prevEdges,
+          newNodes,
+          newEdges,
+        );
+        if (operations.length > 0) {
+          get().onCollaborationOperations?.(operations, {
+            historyEntry: {
+              forwardOps: cloneDeep(operations),
+              inverseOps: buildInverseFlowOperations(
+                prevNodes,
+                prevEdges,
+                prevFlowData,
+                operations,
+              ),
+            },
+          });
+        }
+      }
     }
 
     set({ lastCopiedSelection: newSelection });
@@ -1290,6 +1490,12 @@ const useFlowStore = create<FlowStoreType>((set, get) => ({
       positionDictionary: {},
       componentsToUpdate: [],
       rightClickedNodeId: null,
+      collaborationOperationMode: false,
+      isApplyingRemoteOperations: false,
+      onCollaborationOperations: undefined,
+      undoCollaborationOperations: undefined,
+      redoCollaborationOperations: undefined,
+      flushCollaborationSave: undefined,
     });
   },
   dismissedNodes: [],

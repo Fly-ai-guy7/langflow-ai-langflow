@@ -14,6 +14,7 @@ import {
   type MouseEvent,
   useCallback,
   useEffect,
+  useMemo,
   useRef,
   useState,
 } from "react";
@@ -33,8 +34,24 @@ import { getURL } from "@/controllers/API/helpers/constants";
 import { useGetBuildsQuery } from "@/controllers/API/queries/_builds";
 import CustomLoader from "@/customization/components/custom-loader";
 import { track } from "@/customization/utils/analytics";
+import { setCollaborationLocalSelection } from "@/hooks/flows/collaboration-local-selection-store";
+import {
+  clearCollaborationSelectionPublishState,
+  publishCollaborationSelection,
+} from "@/hooks/flows/collaboration-selection-publish";
+import { selectionTargetFromFlowSelection } from "@/hooks/flows/collaboration-selection-target";
+import {
+  FlowCollaborationProvider,
+  useFlowCollaborationSelectionApi,
+} from "@/hooks/flows/flow-collaboration-context";
+import {
+  buildGraphDiffOperations,
+  buildInverseFlowOperations,
+  buildSetNodeFieldUpdate,
+} from "@/hooks/flows/flow-operation-diff";
 import useApplyFlowToCanvas from "@/hooks/flows/use-apply-flow-to-canvas";
 import useAutoSaveFlow from "@/hooks/flows/use-autosave-flow";
+import { useCollaborationSelectionResendOnReady } from "@/hooks/flows/use-collaboration-selection-resend-on-ready";
 import { useFlowEvents } from "@/hooks/flows/use-flow-events";
 import useUploadFlow from "@/hooks/flows/use-upload-flow";
 import { useAddComponent } from "@/hooks/use-add-component";
@@ -67,6 +84,7 @@ import {
   validateSelection,
 } from "../../../../utils/reactflowUtils";
 import { edgeTypes, nodeTypes } from "../../consts";
+import CollaborationRemoteSelections from "../CollaborationRemoteSelections";
 import ConnectionLineComponent from "../ConnectionLineComponent";
 import FlowBuildingComponent from "../flowBuildingComponent";
 import SelectionMenu from "../SelectionMenuComponent";
@@ -89,6 +107,22 @@ import getRandomName from "./utils/get-random-name";
 import isWrappedWithClass from "./utils/is-wrapped-with-class";
 
 export default function Page({
+  view,
+  setIsLoading,
+}: {
+  view?: boolean;
+  setIsLoading: (isLoading: boolean) => void;
+}): JSX.Element {
+  const currentFlowId = useFlowsManagerStore((state) => state.currentFlowId);
+
+  return (
+    <FlowCollaborationProvider flowId={currentFlowId || undefined}>
+      <PageComponent view={view} setIsLoading={setIsLoading} />
+    </FlowCollaborationProvider>
+  );
+}
+
+function PageComponent({
   view,
   setIsLoading,
 }: {
@@ -143,6 +177,10 @@ export default function Page({
   const [selectionMenuVisible, setSelectionMenuVisible] = useState(false);
   const [openExportModal, setOpenExportModal] = useState(false);
   const edgeUpdateSuccessful = useRef(true);
+  const graphBeforeDragRef = useRef<{
+    nodes: AllNodeType[];
+    data: Record<string, unknown> | undefined;
+  } | null>(null);
 
   const isLocked = useFlowStore(
     useShallow((state) => state.currentFlow?.locked),
@@ -151,7 +189,22 @@ export default function Page({
   const position = useRef({ x: 0, y: 0 });
   const [lastSelection, setLastSelection] =
     useState<OnSelectionChangeParams | null>(null);
+  const latestCollaborationSelectionRef =
+    useRef<ReturnType<typeof selectionTargetFromFlowSelection>>(null);
+  const lastSentCollaborationSelectionRef = useRef<string | null>(null);
   const currentFlowId = useFlowsManagerStore((state) => state.currentFlowId);
+  const collaborationOperationMode = useFlowStore(
+    (state) => state.collaborationOperationMode,
+  );
+  const onCollaborationOperations = useFlowStore(
+    (state) => state.onCollaborationOperations,
+  );
+
+  const {
+    betaEnabled: collaborationBetaEnabled,
+    sendSelectionUpdate: sendCollaborationSelectionUpdate,
+    isCollaborationReady,
+  } = useFlowCollaborationSelectionApi();
 
   const { isAgentWorking, events, lastSettledAt, clearEvents } = useFlowEvents(
     currentFlowId || undefined,
@@ -426,7 +479,12 @@ export default function Page({
       e.preventDefault();
       (e as unknown as Event).stopImmediatePropagation();
       if (lastSelection) {
-        setLastCopiedSelection(_.cloneDeep(lastSelection));
+        setLastCopiedSelection(
+          _.cloneDeep(lastSelection) as {
+            nodes: AllNodeType[];
+            edges: EdgeType[];
+          },
+        );
       }
     }
   }
@@ -437,7 +495,13 @@ export default function Page({
       e.preventDefault();
       (e as unknown as Event).stopImmediatePropagation();
       if (window.getSelection()?.toString().length === 0 && lastSelection) {
-        setLastCopiedSelection(_.cloneDeep(lastSelection), true);
+        setLastCopiedSelection(
+          _.cloneDeep(lastSelection) as {
+            nodes: AllNodeType[];
+            edges: EdgeType[];
+          },
+          true,
+        );
       }
     }
   }
@@ -475,8 +539,44 @@ export default function Page({
           track("Component Deleted", { componentType: n.data.type });
         });
       }
-      deleteNode(lastSelection.nodes.map((node) => node.id));
-      deleteEdge(lastSelection.edges.map((edge) => edge.id));
+      if (collaborationOperationMode && onCollaborationOperations) {
+        const prevNodes = useFlowStore.getState().nodes;
+        const prevEdges = useFlowStore.getState().edges;
+        const prevFlowData = useFlowStore.getState().currentFlow?.data as
+          | Record<string, unknown>
+          | undefined;
+        deleteNode(
+          lastSelection.nodes.map((node) => node.id),
+          { skipCollaborationEmit: true },
+        );
+        deleteEdge(
+          lastSelection.edges.map((edge) => edge.id),
+          { skipCollaborationEmit: true },
+        );
+        const nextState = useFlowStore.getState();
+        const operations = buildGraphDiffOperations(
+          prevNodes,
+          prevEdges,
+          nextState.nodes,
+          nextState.edges,
+        );
+        if (operations.length > 0) {
+          onCollaborationOperations(operations, {
+            historyEntry: {
+              forwardOps: cloneDeep(operations),
+              inverseOps: buildInverseFlowOperations(
+                prevNodes,
+                prevEdges,
+                prevFlowData,
+                operations,
+              ),
+            },
+          });
+        }
+      } else {
+        deleteNode(lastSelection.nodes.map((node) => node.id));
+        deleteEdge(lastSelection.edges.map((edge) => edge.id));
+      }
     }
   }
 
@@ -556,28 +656,78 @@ export default function Page({
     (_, node) => {
       // 👇 make dragging a node undoable
       takeSnapshot();
+      if (collaborationOperationMode && onCollaborationOperations) {
+        const currentNodes = useFlowStore.getState().nodes;
+        graphBeforeDragRef.current = {
+          nodes: cloneDeep(
+            currentNodes.filter(
+              (canvasNode) => canvasNode.selected || canvasNode.id === node.id,
+            ),
+          ),
+          data: useFlowStore.getState().currentFlow?.data as
+            | Record<string, unknown>
+            | undefined,
+        };
+      }
       setIsDragging(true);
       // 👉 you can place your event handlers here
     },
-    [takeSnapshot],
+    [collaborationOperationMode, onCollaborationOperations, takeSnapshot],
   );
 
   const onNodeDragStop: OnNodeDrag = useCallback(
     (_, node) => {
-      // 👇 make moving the canvas undoable
-      autoSaveFlow();
+      if (collaborationOperationMode && onCollaborationOperations) {
+        const movedNodes = nodes.filter(
+          (canvasNode) => canvasNode.selected || canvasNode.id === node.id,
+        );
+        if (movedNodes.length > 0) {
+          const operations = [
+            {
+              type: "update_nodes" as const,
+              updates: movedNodes.map((movedNode) =>
+                buildSetNodeFieldUpdate(
+                  movedNode.id,
+                  ["position"],
+                  movedNode.position,
+                ),
+              ),
+            },
+          ];
+          const previousGraph = graphBeforeDragRef.current;
+          onCollaborationOperations(
+            operations,
+            previousGraph
+              ? {
+                  historyEntry: {
+                    forwardOps: cloneDeep(operations),
+                    inverseOps: buildInverseFlowOperations(
+                      previousGraph.nodes,
+                      [],
+                      previousGraph.data,
+                      operations,
+                    ),
+                  },
+                }
+              : undefined,
+          );
+        }
+      } else {
+        autoSaveFlow();
+      }
+      graphBeforeDragRef.current = null;
       updateCurrentFlow({ nodes });
       setPositionDictionary({});
       setIsDragging(false);
       setHelperLines({});
     },
     [
-      takeSnapshot,
       autoSaveFlow,
+      collaborationOperationMode,
       nodes,
-      edges,
-      reactFlowInstance,
+      onCollaborationOperations,
       setPositionDictionary,
+      updateCurrentFlow,
     ],
   );
 
@@ -640,7 +790,16 @@ export default function Page({
 
   const onSelectionDragStart: SelectionDragHandler = useCallback(() => {
     takeSnapshot();
-  }, [takeSnapshot]);
+    if (collaborationOperationMode && onCollaborationOperations) {
+      const currentNodes = useFlowStore.getState().nodes;
+      graphBeforeDragRef.current = {
+        nodes: cloneDeep(currentNodes.filter((node) => node.selected)),
+        data: useFlowStore.getState().currentFlow?.data as
+          | Record<string, unknown>
+          | undefined,
+      };
+    }
+  }, [collaborationOperationMode, onCollaborationOperations, takeSnapshot]);
 
   const onDragOver = useCallback((event: React.DragEvent) => {
     event.preventDefault();
@@ -747,14 +906,68 @@ export default function Page({
     }
   }, [selectionEnded, lastSelection]);
 
+  const collaborationSelectionPublishContext = useMemo(
+    () => ({
+      enabled: collaborationBetaEnabled,
+      isReady: isCollaborationReady,
+      lastSentRef: lastSentCollaborationSelectionRef,
+      sendSelectionUpdate: sendCollaborationSelectionUpdate,
+    }),
+    [
+      collaborationBetaEnabled,
+      isCollaborationReady,
+      sendCollaborationSelectionUpdate,
+    ],
+  );
+
+  const updateLocalCollaborationSelection = useCallback(
+    (target: ReturnType<typeof selectionTargetFromFlowSelection>) => {
+      latestCollaborationSelectionRef.current = target;
+      publishCollaborationSelection(
+        target,
+        collaborationSelectionPublishContext,
+        {
+          onLocalSelectionChange: setCollaborationLocalSelection,
+          flushLocal: true,
+        },
+      );
+    },
+    [collaborationSelectionPublishContext],
+  );
+
+  const getPendingCollaborationSelection = useCallback(
+    () => latestCollaborationSelectionRef.current,
+    [],
+  );
+
+  useCollaborationSelectionResendOnReady({
+    enabled: collaborationBetaEnabled,
+    isReady: isCollaborationReady,
+    getPendingTarget: getPendingCollaborationSelection,
+    lastSentRef: lastSentCollaborationSelectionRef,
+    sendSelectionUpdate: sendCollaborationSelectionUpdate,
+  });
+
+  useEffect(() => {
+    if (!collaborationBetaEnabled) {
+      latestCollaborationSelectionRef.current = null;
+      clearCollaborationSelectionPublishState(
+        lastSentCollaborationSelectionRef,
+        setCollaborationLocalSelection,
+      );
+    }
+  }, [collaborationBetaEnabled]);
+
   const onSelectionChange = useCallback(
     (flow: OnSelectionChangeParams): void => {
+      updateLocalCollaborationSelection(selectionTargetFromFlowSelection(flow));
+
       setLastSelection(flow);
       if (flow.nodes && (flow.nodes.length === 0 || flow.nodes.length > 1)) {
         setRightClickedNodeId(null);
       }
     },
-    [setRightClickedNodeId],
+    [setRightClickedNodeId, updateLocalCollaborationSelection],
   );
 
   const onNodeContextMenu = useCallback(
@@ -762,6 +975,7 @@ export default function Page({
       event.preventDefault();
       if (effectiveLocked) return;
 
+      updateLocalCollaborationSelection({ kind: "node", id: node.id });
       // Set the right-clicked node ID to show its dropdown menu
       setRightClickedNodeId(node.id);
 
@@ -773,13 +987,52 @@ export default function Page({
         }));
       });
     },
-    [effectiveLocked, setRightClickedNodeId, setNodes],
+    [
+      effectiveLocked,
+      setRightClickedNodeId,
+      setNodes,
+      updateLocalCollaborationSelection,
+    ],
+  );
+
+  const onNodeClick = useCallback(
+    (_event: React.MouseEvent, node: AllNodeType) => {
+      if (effectiveLocked) {
+        return;
+      }
+      updateLocalCollaborationSelection({ kind: "node", id: node.id });
+    },
+    [effectiveLocked, updateLocalCollaborationSelection],
+  );
+
+  const onCanvasMouseDownCapture = useCallback(
+    (event: React.MouseEvent<HTMLDivElement>) => {
+      if (effectiveLocked || isPreviewActive) {
+        return;
+      }
+
+      const target = event.target as HTMLElement | null;
+      const nodeElement = target?.closest(".react-flow__node");
+      const nodeId = nodeElement?.getAttribute("data-id");
+      if (nodeId) {
+        updateLocalCollaborationSelection({ kind: "node", id: nodeId });
+        return;
+      }
+
+      const edgeElement = target?.closest(".react-flow__edge");
+      const edgeId = edgeElement?.getAttribute("data-id");
+      if (edgeId) {
+        updateLocalCollaborationSelection({ kind: "edge", id: edgeId });
+      }
+    },
+    [effectiveLocked, isPreviewActive, updateLocalCollaborationSelection],
   );
 
   const onPaneClick = useCallback(
     (event: React.MouseEvent) => {
       setFilterEdge([]);
       setFilterComponent("");
+      updateLocalCollaborationSelection(null);
       // Hide right-click dropdown when clicking on the pane
       setRightClickedNodeId(null);
       if (isAddingNote) {
@@ -826,17 +1079,20 @@ export default function Page({
       getNodeId,
       setFilterEdge,
       setFilterComponent,
+      updateLocalCollaborationSelection,
     ],
   );
 
-  const handleEdgeClick = (event, edge) => {
+  const handleEdgeClick = (event, edge: EdgeType) => {
     if (effectiveLocked) {
       event.preventDefault();
       event.stopPropagation();
       return;
     }
+    updateLocalCollaborationSelection({ kind: "edge", id: edge.id });
+    const outputType = edge?.data?.sourceHandle?.output_types?.[0];
     const color =
-      nodeColorsName[edge?.data?.sourceHandle?.output_types[0]] || "cyan";
+      (outputType ? nodeColorsName[outputType] : undefined) || "cyan";
 
     const accentColor = `hsl(var(--datatype-${color}))`;
     reactFlowWrapper.current?.style.setProperty("--selected", accentColor);
@@ -911,19 +1167,6 @@ export default function Page({
     ? (nodes.find((n) => n.id === selectedNodeId) as AllNodeType)
     : null;
 
-  // Determine if InspectionPanel should be visible
-  const showInspectionPanel = inspectionPanelVisible && !!selectedNode;
-
-  // Handler to close the inspection panel by deselecting all nodes
-  const handleCloseInspectionPanel = useCallback(() => {
-    setNodes((nds) =>
-      nds.map((node) => ({
-        ...node,
-        selected: false,
-      })),
-    );
-  }, [setNodes]);
-
   useEffect(() => {
     if (inspectionPanelVisible) {
       setSelectionMenuVisible(false);
@@ -934,7 +1177,11 @@ export default function Page({
     <div className="h-full w-full bg-canvas" ref={reactFlowWrapper}>
       {showCanvas ? (
         <>
-          <div id="react-flow-id" className="h-full w-full bg-canvas relative">
+          <div
+            id="react-flow-id"
+            className="h-full w-full bg-canvas relative"
+            onMouseDownCapture={onCanvasMouseDownCapture}
+          >
             {!view && !isWelcomeOpen && (
               <>
                 <MemoizedCanvasControls
@@ -1013,11 +1260,13 @@ export default function Page({
               panActivationKeyCode={""}
               proOptions={{ hideAttribution: true }}
               onPaneClick={onPaneClick}
+              onNodeClick={onNodeClick}
               onEdgeClick={handleEdgeClick}
               onKeyDown={handleKeyDown}
               onNodeContextMenu={onNodeContextMenu}
             >
               <UpdateAllComponents />
+              <CollaborationRemoteSelections />
               <MemoizedBackground />
               {helperLineEnabled && <HelperLines helperLines={helperLines} />}
             </ReactFlow>

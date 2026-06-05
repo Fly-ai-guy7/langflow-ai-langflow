@@ -1,7 +1,7 @@
 import { cloneDeep } from "lodash";
 import { create } from "zustand";
 import { SAVE_DEBOUNCE_TIME } from "@/constants/constants";
-import type { FlowType } from "../types/flow";
+import type { AllNodeType, EdgeType, FlowType } from "../types/flow";
 import type {
   FlowsManagerStoreType,
   UseUndoRedoOptions,
@@ -14,8 +14,14 @@ const defaultOptions: UseUndoRedoOptions = {
   enableShortcuts: true,
 };
 
-const past = {};
-const future = {};
+const past: Record<
+  string,
+  Array<{ nodes: AllNodeType[]; edges: EdgeType[] }>
+> = {};
+const future: Record<
+  string,
+  Array<{ nodes: AllNodeType[]; edges: EdgeType[] }>
+> = {};
 
 const useFlowsManagerStore = create<FlowsManagerStoreType>((set, get) => ({
   IOModalOpen: false,
@@ -63,6 +69,9 @@ const useFlowsManagerStore = create<FlowsManagerStoreType>((set, get) => ({
     const currentFlowId = get().currentFlowId;
     // push the current graph to the past state
     const flowStore = useFlowStore.getState();
+    if (flowStore.collaborationOperationMode) {
+      return;
+    }
     const newState = {
       nodes: cloneDeep(flowStore.nodes),
       edges: cloneDeep(flowStore.edges),
@@ -87,8 +96,18 @@ const useFlowsManagerStore = create<FlowsManagerStoreType>((set, get) => ({
 
     future[currentFlowId] = [];
   },
+  clearUndoRedoHistory: (flowId?: string) => {
+    const targetFlowId = flowId ?? get().currentFlowId;
+    if (!targetFlowId) return;
+    past[targetFlowId] = [];
+    future[targetFlowId] = [];
+  },
   undo: () => {
     const newState = useFlowStore.getState();
+    if (newState.collaborationOperationMode) {
+      newState.undoCollaborationOperations?.();
+      return;
+    }
     const currentFlowId = get().currentFlowId;
     const pastLength = past[currentFlowId]?.length ?? 0;
     const pastState = past[currentFlowId]?.[pastLength - 1] ?? null;
@@ -102,12 +121,16 @@ const useFlowsManagerStore = create<FlowsManagerStoreType>((set, get) => ({
         edges: newState.edges,
       });
 
-      newState.setNodes(pastState.nodes);
-      newState.setEdges(pastState.edges);
+      newState.setNodes(pastState.nodes, { skipCollaborationEmit: true });
+      newState.setEdges(pastState.edges, { skipCollaborationEmit: true });
     }
   },
   redo: () => {
     const newState = useFlowStore.getState();
+    if (newState.collaborationOperationMode) {
+      newState.redoCollaborationOperations?.();
+      return;
+    }
     const currentFlowId = get().currentFlowId;
     const futureLength = future[currentFlowId]?.length ?? 0;
     const futureState = future[currentFlowId]?.[futureLength - 1] ?? null;
@@ -121,8 +144,8 @@ const useFlowsManagerStore = create<FlowsManagerStoreType>((set, get) => ({
         edges: newState.edges,
       });
 
-      newState.setNodes(futureState.nodes);
-      newState.setEdges(futureState.edges);
+      newState.setNodes(futureState.nodes, { skipCollaborationEmit: true });
+      newState.setEdges(futureState.edges, { skipCollaborationEmit: true });
     }
   },
   searchFlowsComponents: "",
