@@ -678,8 +678,8 @@ def test_startup_scan_store_flows_accessible_lazily(tmp_path):
     assert result[1].title == "Pre-existing"
 
 
-def test_serve_command_passes_workers_to_uvicorn():
-    """--workers N must be forwarded to uvicorn.run as the workers argument."""
+def _run_serve_capturing_gunicorn(*, workers, max_requests, captured, limit_concurrency=None):
+    """Run serve_command under a stubbed gunicorn launcher, capturing options + launch env."""
     import json
     import os
     import tempfile
@@ -692,19 +692,29 @@ def test_serve_command_passes_workers_to_uvicorn():
     mock_graph = MagicMock()
     mock_graph.context = {}
 
+    class FakeGunicornApp:
+        def __init__(self, app_import_string, options):
+            captured["app_import_string"] = app_import_string
+            captured["options"] = options
+
+        def run(self):
+            captured["env"] = dict(os.environ)  # capture env set before launch
+
     with tempfile.TemporaryDirectory() as tmp:
         p = Path(tmp) / "flow.json"
         p.write_text(json.dumps(flow_data))
         with (
             patch.dict(os.environ, {"LANGFLOW_API_KEY": "test-key"}),  # pragma: allowlist secret
             patch("lfx.cli.commands.load_flow_from_json", return_value=mock_graph),
-            patch("lfx.cli.commands.uvicorn.run") as mock_run,
+            patch("lfx.cli.serve_gunicorn.LFXGunicornApp", FakeGunicornApp),
         ):
+            # Direct call (not via CLI): typer defaults are not applied, so pass
+            # max_requests / limit_concurrency explicitly even when None.
             serve_command(
                 script_paths=[str(p)],
                 host="127.0.0.1",
                 port=9999,
-                workers=4,
+                workers=workers,
                 verbose=False,
                 env_file=None,
                 log_level="warning",
@@ -713,17 +723,63 @@ def test_serve_command_passes_workers_to_uvicorn():
                 stdin=False,
                 check_variables=False,
                 no_env_fallback=False,
+                max_requests=max_requests,
+                limit_concurrency=limit_concurrency,
             )
 
-    mock_run.assert_called_once()
-    call_args = mock_run.call_args[0]
-    call_kwargs = mock_run.call_args[1] if mock_run.call_args[1] else {}
-    assert call_kwargs.get("workers") == 4
-    # For workers > 1, the app must be the factory import string, not an object
-    assert call_args[0] == "lfx.cli.serve_app:create_serve_app"
-    # The factory=True flag is required so uvicorn calls create_serve_app() at
-    # worker startup, not at request time.
-    assert call_kwargs.get("factory") is True
+
+def test_serve_command_passes_workers_to_gunicorn():
+    """--workers N is forwarded to gunicorn; default --max-requests means no recycling.
+
+    Multi-worker serving runs gunicorn with preload; the app is loaded by the
+    preload master via the ``serve_preloaded_app`` import string. With no
+    --max-requests, max_requests defaults to 0 (gunicorn: never recycle, no
+    per-request isolation).
+    """
+    captured: dict = {}
+    _run_serve_capturing_gunicorn(workers=4, max_requests=None, captured=captured)
+
+    assert captured["options"]["workers"] == 4
+    # The preload master loads the warm app from this import string, not a factory.
+    assert captured["app_import_string"] == "lfx.cli.serve_preloaded_app:app"
+    assert captured["options"]["preload_app"] is True
+    # Default: no recycling (0), so workers persist (no per-request isolation).
+    assert captured["options"]["max_requests"] == 0
+    # The custom worker (applies limit_concurrency) is used, not the stock one.
+    assert captured["options"]["worker_class"] == "lfx.cli.serve_gunicorn.LFXUvicornWorker"
+
+
+def test_serve_command_max_requests_propagates_to_gunicorn():
+    """--max-requests N is forwarded to gunicorn as max_requests (per-request recycling)."""
+    captured: dict = {}
+    _run_serve_capturing_gunicorn(workers=4, max_requests=1, captured=captured)
+
+    assert captured["options"]["max_requests"] == 1
+    assert captured["options"]["preload_app"] is True
+
+
+def test_serve_command_limit_concurrency_sets_env_for_workers():
+    """--limit-concurrency N is exported so each LFXUvicornWorker applies it."""
+    from lfx.cli.serve_app import _SERVE_LIMIT_CONCURRENCY_ENV
+
+    captured: dict = {}
+    _run_serve_capturing_gunicorn(workers=4, max_requests=1, limit_concurrency=1, captured=captured)
+
+    # Set in the environment before launch (inherited by forked workers), then cleaned up.
+    assert captured["env"].get(_SERVE_LIMIT_CONCURRENCY_ENV) == "1"
+    import os as _os
+
+    assert _SERVE_LIMIT_CONCURRENCY_ENV not in _os.environ  # cleaned up after launch
+
+
+def test_serve_command_no_limit_concurrency_leaves_env_unset():
+    """Without --limit-concurrency, the env var is never set."""
+    from lfx.cli.serve_app import _SERVE_LIMIT_CONCURRENCY_ENV
+
+    captured: dict = {}
+    _run_serve_capturing_gunicorn(workers=4, max_requests=None, limit_concurrency=None, captured=captured)
+
+    assert _SERVE_LIMIT_CONCURRENCY_ENV not in captured["env"]
 
 
 def test_serve_command_sets_startup_paths_env_for_multi_worker(tmp_path):
@@ -741,8 +797,15 @@ def test_serve_command_sets_startup_paths_env_for_multi_worker(tmp_path):
 
     captured_env: dict = {}
 
-    def capture_env(*_a, **_kw):
-        captured_env.update(os.environ)
+    def _fake_gunicorn_app_factory():
+        class FakeGunicornApp:
+            def __init__(self, *_a, **_kw):
+                pass
+
+            def run(self):
+                captured_env.update(os.environ)
+
+        return FakeGunicornApp
 
     p = tmp_path / "flow.json"
     p.write_text(json.dumps(flow_data))
@@ -750,7 +813,7 @@ def test_serve_command_sets_startup_paths_env_for_multi_worker(tmp_path):
     with (
         patch.dict(os.environ, {"LANGFLOW_API_KEY": "test-key"}),  # pragma: allowlist secret
         patch("lfx.cli.commands.load_flow_from_json", return_value=mock_graph),
-        patch("lfx.cli.commands.uvicorn.run", side_effect=capture_env),
+        patch("lfx.cli.serve_gunicorn.LFXGunicornApp", _fake_gunicorn_app_factory()),
     ):
         serve_command(
             script_paths=[str(p)],
@@ -767,7 +830,7 @@ def test_serve_command_sets_startup_paths_env_for_multi_worker(tmp_path):
             no_env_fallback=False,
         )
 
-    assert _SERVE_STARTUP_PATHS_ENV in captured_env, "LFX_SERVE_STARTUP_PATHS must be set before uvicorn.run()"
+    assert _SERVE_STARTUP_PATHS_ENV in captured_env, "LFX_SERVE_STARTUP_PATHS must be set before the launch"
     paths = json.loads(captured_env[_SERVE_STARTUP_PATHS_ENV])
     assert len(paths) == 1
     assert paths[0].endswith("flow.json"), f"expected flow.json in paths, got {paths}"
@@ -795,8 +858,12 @@ def test_serve_command_does_not_set_startup_paths_when_flow_dir_set(tmp_path):
 
     captured_env: dict = {}
 
-    def capture_env(*_a, **_kw):
-        captured_env.update(os.environ)
+    class FakeGunicornApp:
+        def __init__(self, *_a, **_kw):
+            pass
+
+        def run(self):
+            captured_env.update(os.environ)
 
     p = tmp_path / "flow.json"
     p.write_text(json.dumps(flow_data))
@@ -804,7 +871,7 @@ def test_serve_command_does_not_set_startup_paths_when_flow_dir_set(tmp_path):
     with (
         patch.dict(os.environ, {"LANGFLOW_API_KEY": "test-key"}),  # pragma: allowlist secret
         patch("lfx.cli.commands.load_flow_from_json", return_value=mock_graph),
-        patch("lfx.cli.commands.uvicorn.run", side_effect=capture_env),
+        patch("lfx.cli.serve_gunicorn.LFXGunicornApp", FakeGunicornApp),
     ):
         serve_command(
             script_paths=[str(p)],
@@ -842,13 +909,20 @@ def test_serve_command_warns_when_workers_gt1_without_flow_dir():
 
     stderr_output = []
 
+    class FakeGunicornApp:
+        def __init__(self, *_a, **_kw):
+            pass
+
+        def run(self):
+            pass
+
     with tempfile.TemporaryDirectory() as tmp:
         p = Path(tmp) / "flow.json"
         p.write_text(json.dumps(flow_data))
         with (
             patch.dict(os.environ, {"LANGFLOW_API_KEY": "test-key"}),  # pragma: allowlist secret
             patch("lfx.cli.commands.load_flow_from_json", return_value=mock_graph),
-            patch("lfx.cli.commands.uvicorn.run"),
+            patch("lfx.cli.serve_gunicorn.LFXGunicornApp", FakeGunicornApp),
             patch("typer.echo", side_effect=lambda msg, **kw: stderr_output.append(msg) if kw.get("err") else None),
         ):
             serve_command(
@@ -930,14 +1004,18 @@ def test_serve_command_allows_py_with_multiple_workers_no_flow_dir(tmp_path):
     mock_graph.context = {}
     captured_env: dict = {}
 
-    def capture_env(*_a, **_kw):
-        captured_env.update(os.environ)
+    class FakeGunicornApp:
+        def __init__(self, *_a, **_kw):
+            pass
+
+        def run(self):
+            captured_env.update(os.environ)
 
     with (
         patch.dict(os.environ, {"LANGFLOW_API_KEY": "test-key"}),  # pragma: allowlist secret
         patch("lfx.cli.commands.load_graph_from_script", new=AsyncMock(return_value=mock_graph)),
         patch("lfx.cli.commands.find_graph_variable", return_value={"type": "assignment", "line": 1}),
-        patch("lfx.cli.commands.uvicorn.run", side_effect=capture_env),
+        patch("lfx.cli.serve_gunicorn.LFXGunicornApp", FakeGunicornApp),
     ):
         # Must NOT raise — .py without flow_dir is allowed for multi-worker
         serve_command(
@@ -977,13 +1055,20 @@ def test_serve_command_no_warning_when_workers_gt1_with_flow_dir(tmp_path):
 
     stderr_output = []
 
+    class FakeGunicornApp:
+        def __init__(self, *_a, **_kw):
+            pass
+
+        def run(self):
+            pass
+
     with tempfile.TemporaryDirectory() as tmp:
         p = Path(tmp) / "flow.json"
         p.write_text(json.dumps(flow_data))
         with (
             patch.dict(os.environ, {"LANGFLOW_API_KEY": "test-key"}),  # pragma: allowlist secret
             patch("lfx.cli.commands.load_flow_from_json", return_value=mock_graph),
-            patch("lfx.cli.commands.uvicorn.run"),
+            patch("lfx.cli.serve_gunicorn.LFXGunicornApp", FakeGunicornApp),
             patch("typer.echo", side_effect=lambda msg, **kw: stderr_output.append(msg) if kw.get("err") else None),
         ):
             serve_command(
