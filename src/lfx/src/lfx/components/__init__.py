@@ -7,206 +7,60 @@ from lfx.components._importing import import_mod
 if TYPE_CHECKING:
     # These imports are only for type checking and match _dynamic_imports
     from lfx.components import (
-        FAISS,
-        Notion,
-        agentql,
-        aiml,
-        altk,
-        amazon,
-        anthropic,
-        apify,
-        assemblyai,
-        azure,
-        baidu,
-        bing,
-        cassandra,
         chains,
-        chroma,
-        cleanlab,
-        clickhouse,
-        cloudflare,
-        codeagents,
-        cohere,
-        composio,
-        confluence,
-        couchbase,
-        crewai,
-        cuga,
         custom_component,
         data,
-        datastax,
         deactivated,
-        deepseek,
         documentloaders,
-        elastic,
         embeddings,
-        exa,
         files_ingestion,
-        firecrawl,
-        git,
-        glean,
-        google,
-        groq,
         helpers,
         homeassistant,
         huggingface,
         icosacomputing,
         input_output,
-        jigsawstack,
         langchain_utilities,
-        langwatch,
         link_extractors,
-        litellm,
-        lmstudio,
         logic,
-        maritalk,
-        mem0,
-        milvus,
-        mistral,
         models_and_agents,
-        mongodb,
-        needle,
-        notdiamond,
-        novita,
-        nvidia,
-        olivya,
-        ollama,
-        openai,
-        openrouter,
         output_parsers,
-        perplexity,
-        pgvector,
-        pinecone,
         processing,
         prototypes,
-        qdrant,
-        redis,
-        sambanova,
-        scrapegraph,
-        searchapi,
-        serpapi,
-        supabase,
-        tavily,
         textsplitters,
         toolkits,
         tools,
-        twelvelabs,
-        unstructured,
-        upstash,
-        vectara,
         vectorstores,
-        vertexai,
-        vlmrun,
-        weaviate,
-        wikipedia,
-        wolframalpha,
-        xai,
         yahoosearch,
-        youtube,
-        zep,
     )
 
 
 # Dynamic imports mapping - maps both modules and individual components
 _dynamic_imports = {
     # Category modules (existing functionality)
-    "agentql": "__module__",
-    "aiml": "__module__",
-    "altk": "__module__",
-    "amazon": "__module__",
-    "anthropic": "__module__",
-    "apify": "__module__",
-    "assemblyai": "__module__",
-    "azure": "__module__",
-    "baidu": "__module__",
-    "bing": "__module__",
-    "cassandra": "__module__",
     "chains": "__module__",
-    "chroma": "__module__",
-    "cleanlab": "__module__",
-    "clickhouse": "__module__",
-    "cloudflare": "__module__",
-    "cohere": "__module__",
-    "composio": "__module__",
-    "confluence": "__module__",
-    "couchbase": "__module__",
-    "crewai": "__module__",
-    "cuga": "__module__",
-    "codeagents": "__module__",
     "custom_component": "__module__",
     "data": "__module__",
-    "datastax": "__module__",
     "deactivated": "__module__",
-    "deepseek": "__module__",
     "documentloaders": "__module__",
-    "elastic": "__module__",
     "embeddings": "__module__",
-    "exa": "__module__",
-    "FAISS": "__module__",
-    "firecrawl": "__module__",
     "files_ingestion": "__module__",
-    "git": "__module__",
-    "glean": "__module__",
-    "google": "__module__",
-    "groq": "__module__",
     "helpers": "__module__",
     "homeassistant": "__module__",
     "huggingface": "__module__",
     "icosacomputing": "__module__",
     "input_output": "__module__",
-    "jigsawstack": "__module__",
     "langchain_utilities": "__module__",
-    "langwatch": "__module__",
     "link_extractors": "__module__",
-    "litellm": "__module__",
-    "lmstudio": "__module__",
     "logic": "__module__",
-    "maritalk": "__module__",
-    "mem0": "__module__",
-    "milvus": "__module__",
-    "mistral": "__module__",
     "models_and_agents": "__module__",
-    "mongodb": "__module__",
-    "needle": "__module__",
-    "notdiamond": "__module__",
-    "Notion": "__module__",
-    "novita": "__module__",
-    "nvidia": "__module__",
-    "olivya": "__module__",
-    "ollama": "__module__",
-    "openai": "__module__",
-    "openrouter": "__module__",
     "output_parsers": "__module__",
-    "perplexity": "__module__",
-    "pgvector": "__module__",
-    "pinecone": "__module__",
     "processing": "__module__",
     "prototypes": "__module__",
-    "qdrant": "__module__",
-    "redis": "__module__",
-    "sambanova": "__module__",
-    "scrapegraph": "__module__",
-    "searchapi": "__module__",
-    "serpapi": "__module__",
-    "supabase": "__module__",
-    "tavily": "__module__",
     "textsplitters": "__module__",
     "toolkits": "__module__",
     "tools": "__module__",
-    "twelvelabs": "__module__",
-    "unstructured": "__module__",
-    "upstash": "__module__",
-    "vectara": "__module__",
     "vectorstores": "__module__",
-    "vertexai": "__module__",
-    "vlmrun": "__module__",
-    "weaviate": "__module__",
-    "wikipedia": "__module__",
-    "wolframalpha": "__module__",
-    "xai": "__module__",
     "yahoosearch": "__module__",
-    "youtube": "__module__",
-    "zep": "__module__",
 }
 
 # Track which modules we've already discovered to avoid re-scanning
@@ -215,7 +69,7 @@ _discovered_modules = set()
 
 def _discover_components_from_module(module_name):
     """Discover individual components from a specific module on-demand."""
-    if module_name in _discovered_modules or module_name == "Notion":
+    if module_name in _discovered_modules or module_name == "notion":
         return
 
     try:
@@ -239,103 +93,30 @@ def _discover_components_from_module(module_name):
 
 # Static base __all__ with module names
 __all__ = [
-    "FAISS",
-    "Notion",
-    "agentql",
-    "aiml",
-    "altk",
-    "amazon",
-    "anthropic",
-    "apify",
-    "assemblyai",
-    "azure",
-    "baidu",
-    "bing",
-    "cassandra",
     "chains",
-    "chroma",
-    "cleanlab",
-    "clickhouse",
-    "cloudflare",
-    "codeagents",
-    "cohere",
-    "composio",
-    "confluence",
-    "couchbase",
-    "crewai",
-    "cuga",
     "custom_component",
     "data",
-    "datastax",
     "deactivated",
-    "deepseek",
     "documentloaders",
-    "elastic",
     "embeddings",
-    "exa",
     "files_ingestion",
-    "firecrawl",
-    "git",
-    "glean",
-    "google",
-    "groq",
     "helpers",
     "homeassistant",
     "huggingface",
     "icosacomputing",
     "input_output",
-    "jigsawstack",
     "langchain_utilities",
-    "langwatch",
     "link_extractors",
-    "litellm",
-    "lmstudio",
     "logic",
-    "maritalk",
-    "mem0",
-    "milvus",
-    "mistral",
     "models_and_agents",
-    "mongodb",
-    "needle",
-    "notdiamond",
-    "novita",
-    "nvidia",
-    "olivya",
-    "ollama",
-    "openai",
-    "openrouter",
     "output_parsers",
-    "perplexity",
-    "pgvector",
-    "pinecone",
     "processing",
     "prototypes",
-    "qdrant",
-    "redis",
-    "sambanova",
-    "scrapegraph",
-    "searchapi",
-    "serpapi",
-    "supabase",
-    "tavily",
     "textsplitters",
     "toolkits",
     "tools",
-    "twelvelabs",
-    "unstructured",
-    "upstash",
-    "vectara",
     "vectorstores",
-    "vertexai",
-    "vlmrun",
-    "weaviate",
-    "wikipedia",
-    "wolframalpha",
-    "xai",
     "yahoosearch",
-    "youtube",
-    "zep",
 ]
 
 
@@ -355,7 +136,7 @@ def __getattr__(attr_name: str) -> Any:
         undiscovered_modules = [
             name
             for name in _dynamic_imports
-            if _dynamic_imports[name] == "__module__" and name not in _discovered_modules and name != "Notion"
+            if _dynamic_imports[name] == "__module__" and name not in _discovered_modules and name != "notion"
         ]
 
         # Discover components from undiscovered modules
@@ -366,10 +147,24 @@ def __getattr__(attr_name: str) -> Any:
             if attr_name in _dynamic_imports:
                 break
 
-    # If still not found, raise AttributeError
+    # If still not found, try to resolve as an extracted bundle.  The
+    # mass-extraction moved many former in-tree categories into
+    # standalone ``lfx-<bundle>`` distributions whose import path is
+    # ``lfx_<bundle>.components.<bundle>``.  Saved flows and the
+    # backwards-compat shim in ``langflow.components`` expect
+    # ``getattr(lfx.components, '<bundle>')`` to return the bundle
+    # package; resolve the import on first access and cache.
     if attr_name not in _dynamic_imports:
-        msg = f"module '{__name__}' has no attribute '{attr_name}'"
-        raise AttributeError(msg)
+        bundle_pkg_name = f"lfx_{attr_name}.components.{attr_name}"
+        try:
+            import importlib
+
+            result = importlib.import_module(bundle_pkg_name)
+        except ImportError:
+            msg = f"module '{__name__}' has no attribute '{attr_name}'"
+            raise AttributeError(msg) from None
+        globals()[attr_name] = result
+        return result
 
     try:
         module_path = _dynamic_imports[attr_name]
@@ -419,4 +214,29 @@ def __getattr__(attr_name: str) -> Any:
 
 
 def __dir__() -> list[str]:
-    return list(__all__)
+    """Listing of in-tree categories + installed bundle names.
+
+    Bundle names are discovered via the ``langflow.extensions`` entry
+    point so the listing stays in sync with whatever ``lfx-*``
+    distributions are installed (no static list to maintain).
+    Falls back silently if the entry-point scan fails -- the dir is
+    informational and must never block the import.
+    """
+    items = list(__all__)
+    try:
+        from importlib.metadata import entry_points
+
+        # Distribution names follow ``lfx-<bundle>``; the bundle
+        # category name is the distribution suffix with hyphens
+        # mapped to underscores.
+        items.extend(
+            ep.name[len("lfx-") :].replace("-", "_")
+            for ep in entry_points(group="langflow.extensions")
+            if ep.name.startswith("lfx-")
+        )
+    except Exception as _err:  # noqa: BLE001 - dir() must never block on diagnostics
+        # The listing is informational; downstream callers (IDE
+        # autocomplete, dir() prints) prefer an incomplete list over
+        # an exception.
+        _ = _err
+    return sorted(set(items))

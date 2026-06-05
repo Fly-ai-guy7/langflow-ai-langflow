@@ -4,7 +4,7 @@ import os
 from unittest.mock import Mock, patch
 
 import pytest
-from lfx.components.mem0.mem0_chat_memory import Mem0MemoryComponent
+from lfx_mem0.components.mem0.mem0_chat_memory import Mem0MemoryComponent
 
 
 @pytest.mark.unit
@@ -22,7 +22,7 @@ class TestMem0CloudValidation:
             error_msg = str(exc_info.value).lower()
             assert "astra" in error_msg or "cloud" in error_msg
 
-    @patch("lfx.components.mem0.mem0_chat_memory.Memory")
+    @patch("lfx_mem0.components.mem0.mem0_chat_memory.Memory")
     def test_build_mem0_works_when_not_in_cloud(self, mock_memory):
         """build_mem0 works when not in cloud, passing the OpenAI key through mem0 config.
 
@@ -38,8 +38,8 @@ class TestMem0CloudValidation:
             # Key flows through config, not the environment.
             mock_memory.from_config.assert_called_once()
             config = mock_memory.from_config.call_args.kwargs["config_dict"]
-            assert config["llm"]["config"]["api_key"] == "test-key"
-            assert config["embedder"]["config"]["api_key"] == "test-key"
+            assert config["llm"]["config"]["api_key"] == "test-key"  # pragma: allowlist secret
+            assert config["embedder"]["config"]["api_key"] == "test-key"  # pragma: allowlist secret
             # Regression guard for the credential-bleed bug: never pollute os.environ.
             assert "OPENAI_API_KEY" not in os.environ
 

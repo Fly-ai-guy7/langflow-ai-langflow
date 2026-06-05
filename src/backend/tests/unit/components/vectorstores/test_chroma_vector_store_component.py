@@ -7,8 +7,8 @@ from lfx.base.vectorstores.chroma_security import (
     chroma_client_create_collection_kwargs,
     chroma_langchain_collection_kwargs,
 )
-from lfx.components.chroma import ChromaVectorStoreComponent
 from lfx.schema.data import Data
+from lfx_chroma import ChromaVectorStoreComponent
 
 from tests.base import ComponentTestBaseWithoutClient, VersionComponentMapping
 
@@ -74,7 +74,7 @@ class TestChromaVectorStoreComponent(ComponentTestBaseWithoutClient):
     @pytest.fixture
     def default_kwargs(self, tmp_path: Path) -> dict[str, Any]:
         """Return the default kwargs for the component."""
-        from lfx.components.openai.openai import OpenAIEmbeddingsComponent
+        from lfx_openai.components.openai.openai import OpenAIEmbeddingsComponent
 
         from tests.api_keys import get_openai_api_key
 

@@ -363,6 +363,54 @@ async def _load_from_index_or_cache(
     return modules_dict, None
 
 
+def _discover_bundle_component_packages() -> list[tuple[str, str]]:
+    """Return ``(walk_root_pkgname, prefix)`` for every installed ``lfx-<bundle>``.
+
+    After the mass-extraction each bundle ships its component classes at
+    ``lfx_<bundle>.components.<bundle>.*``.  Discover them via the
+    ``langflow.extensions`` entry-point group so newly installed bundles
+    are picked up without a registry rebuild.
+
+    The returned pairs feed ``pkgutil.walk_packages`` exactly like the
+    in-tree walk: ``walk_root_pkgname`` is the dotted package whose
+    ``__path__`` gets walked, and ``prefix`` is prepended to each
+    discovered module name so the prefix-based filters in the caller
+    (``parts[2]`` for the bundle group, ``len(parts) >= 4`` for the
+    file stem) match the in-tree shape.
+
+    Failures (missing package, broken entry-point) are swallowed: the
+    in-tree walk still populates the result, and the bundle-specific
+    diagnostics surface through the loader's own typed-error pipeline.
+    """
+    from importlib.metadata import entry_points
+
+    discovered: list[tuple[str, str]] = []
+    try:
+        eps = entry_points(group="langflow.extensions")
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"Failed to scan langflow.extensions entry points: {e}")
+        return discovered
+
+    for ep in eps:
+        if not ep.name.startswith("lfx-"):
+            continue
+        # Distribution ``lfx-<bundle>`` ships its components at
+        # ``lfx_<bundle>.components.<bundle>``.  The entry-point value
+        # is the bundle's importable package (``lfx_<bundle>``), so we
+        # walk ``<package>.components`` and rely on the caller's
+        # ``parts[2]`` extraction to land the bundle name in the
+        # ``top_level`` slot for the modules_dict.
+        try:
+            mod = importlib.import_module(f"{ep.value}.components")
+        except Exception as e:  # noqa: BLE001
+            logger.debug(f"Skipping bundle {ep.name!r}: components package not importable: {e}")
+            continue
+        for _, child_modname, ispkg in pkgutil.iter_modules(mod.__path__, prefix=f"{ep.value}.components."):
+            if ispkg:
+                discovered.append((child_modname, f"{child_modname}."))
+    return discovered
+
+
 def _warm_circular_imports() -> None:
     """Pre-import third-party modules that contain an *internal* circular import.
 
@@ -409,29 +457,48 @@ async def _load_components_dynamically(
         await logger.aerror(f"Failed to import langflow.components package: {e}", exc_info=True)
         return modules_dict
 
+    # Walk both the in-tree ``lfx.components`` tree AND every installed
+    # bundle's ``lfx_<bundle>.components.<bundle>`` tree.  The bundle
+    # walks land under the bundle's snake_case category name in
+    # ``modules_dict`` because ``_process_single_module`` extracts
+    # ``parts[2]`` as the top-level key -- e.g. for
+    # ``lfx_openai.components.openai.openai_chat_model`` that's
+    # ``openai``, matching the in-tree pre-extraction layout.
+    walk_roots: list[tuple[list[str], str]] = [
+        (list(components_pkg.__path__), components_pkg.__name__ + "."),
+    ]
+    for bundle_pkg, bundle_prefix in _discover_bundle_component_packages():
+        try:
+            bundle_mod = importlib.import_module(bundle_pkg)
+        except Exception as e:  # noqa: BLE001
+            await logger.adebug(f"Skipping bundle {bundle_pkg!r}: not importable: {e}")
+            continue
+        walk_roots.append((list(bundle_mod.__path__), bundle_prefix))
+
     # Collect all module names to process
     module_names = []
-    for _, modname, _ in pkgutil.walk_packages(components_pkg.__path__, prefix=components_pkg.__name__ + "."):
-        # Skip if the module is in the deactivated folder
-        if "deactivated" in modname:
-            continue
-
-        # Parse module name once for all checks
-        parts = modname.split(".")
-        if len(parts) > MIN_MODULE_PARTS:
-            component_type = parts[2]
-
-            # Skip disabled components when ASTRA_CLOUD_DISABLE_COMPONENT is true
-            if len(parts) >= MIN_MODULE_PARTS_WITH_FILENAME:
-                module_filename = parts[3]
-                if is_component_disabled_in_astra_cloud(component_type.lower(), module_filename):
-                    continue
-
-            # If specific modules requested, filter by top-level module name
-            if target_modules and component_type.lower() not in target_modules:
+    for path_list, walk_prefix in walk_roots:
+        for _, modname, _ in pkgutil.walk_packages(path_list, prefix=walk_prefix):
+            # Skip if the module is in the deactivated folder
+            if "deactivated" in modname:
                 continue
 
-        module_names.append(modname)
+            # Parse module name once for all checks
+            parts = modname.split(".")
+            if len(parts) > MIN_MODULE_PARTS:
+                component_type = parts[2]
+
+                # Skip disabled components when ASTRA_CLOUD_DISABLE_COMPONENT is true
+                if len(parts) >= MIN_MODULE_PARTS_WITH_FILENAME:
+                    module_filename = parts[3]
+                    if is_component_disabled_in_astra_cloud(component_type.lower(), module_filename):
+                        continue
+
+                # If specific modules requested, filter by top-level module name
+                if target_modules and component_type.lower() not in target_modules:
+                    continue
+
+            module_names.append(modname)
 
     if target_modules:
         await logger.adebug(f"Found {len(module_names)} modules matching filter")
@@ -1130,13 +1197,164 @@ async def get_and_cache_all_types_dict(
         custom_flat = custom_components_dict.get("components", custom_components_dict) or {}
 
         # Merge built-in, custom, and extension components (no wrapper at cache level).
-        # Extension components win on collision so a manifest-shipping bundle
-        # supersedes any same-named legacy entry.
-        component_cache.all_types_dict = {
-            **langflow_components["components"],
-            **custom_flat,
-            **extension_components,
-        }
+        # The merge is a deep two-level merge: for each top-level category
+        # key the inner component dicts are UNIONed rather than replaced,
+        # because the same category name can appear in more than one
+        # source.  In particular:
+        #
+        # * The dynamic walk via ``import_langflow_components`` registers
+        #   extracted-bundle components under their bare class names
+        #   (e.g. ``"openai" -> {"OpenAIModel": template}``) so saved
+        #   flows and the flow builder's bare-name lookups keep working.
+        # * ``import_extension_components`` registers the SAME bundle
+        #   under its canonical namespaced ID (e.g.
+        #   ``"openai" -> {"ext:openai:OpenAIModelComponent@official": template}``).
+        #
+        # A shallow merge would drop one half: replacing the
+        # ``"openai"`` entry from ``langflow_components`` with the one
+        # from ``extension_components`` (or vice versa) removes a valid
+        # set of keys the rest of the cache assumes is present.  Deep
+        # merge keeps both surface forms accessible.
+        #
+        # On bare-name collisions the extension entry wins (so a
+        # manifest-shipping bundle supersedes a same-named legacy entry);
+        # on namespaced-ID collisions the namespaced entry wins by
+        # definition (only the extension source produces those keys).
+        merged: dict[str, dict[str, Any]] = {}
+        for source_index, source in enumerate((langflow_components["components"], custom_flat, extension_components)):
+            for category, items in source.items():
+                if not isinstance(items, dict):
+                    continue
+                bucket = merged.setdefault(category, {})
+                # Log bare-name collisions between non-ext sources so we can
+                # diagnose cases where an unrelated extension class with the
+                # same name silently shadows a built-in.  Ext-keyed entries
+                # are expected to collide with their bare twins and are
+                # handled by the dedup pass below; only flag bare<->bare.
+                for key in items:
+                    if source_index > 0 and isinstance(key, str) and not key.startswith("ext:") and key in bucket:
+                        await logger.adebug(
+                            "Cache merge: bare key %r in category %r overwritten by source #%d",
+                            key,
+                            category,
+                            source_index,
+                        )
+                bucket.update(items)
+
+        # Dedupe namespaced-ID keys against their bare-name twin.  The bundle
+        # walk above registers each extracted-bundle component under its bare
+        # class name (frontend palette + saved-flow lookups), while
+        # ``import_extension_components`` registers the SAME component under
+        # ``ext:<bundle>:<Class>@<slot>``.  Keeping both as separate dict keys
+        # makes the frontend render every bundle component twice in the
+        # palette.  The canonical namespaced_id is preserved inside each
+        # template via ``template["namespaced_id"]``, so dropping the
+        # duplicate dict key loses no metadata.  We first transplant the
+        # extension fields (namespaced_id / bundle / extension / version)
+        # from the ``ext:`` entry onto the bare-name entry, then drop the
+        # ``ext:`` key.  An ``ext:`` entry without a bare-name twin is
+        # preserved (legacy custom-path bundles whose dynamic walk produced
+        # no bare entry).
+        for category_items in merged.values():
+            ext_keys = [k for k in category_items if isinstance(k, str) and k.startswith("ext:")]
+            # Build a display_name -> bare_key index of non-ext entries so we
+            # can find a twin even when ``obj.name`` doesn't map cleanly from
+            # the class name (e.g. ``PineconeVectorStoreComponent`` -> ``Pinecone``).
+            display_name_to_bare: dict[str, str] = {}
+            for bare_key, bare_template in category_items.items():
+                if isinstance(bare_key, str) and bare_key.startswith("ext:"):
+                    continue
+                if not isinstance(bare_template, dict):
+                    continue
+                dn = bare_template.get("display_name")
+                if isinstance(dn, str) and dn:
+                    display_name_to_bare.setdefault(dn, bare_key)
+            for ext_key in ext_keys:
+                ext_template = category_items[ext_key]
+                if not isinstance(ext_template, dict):
+                    continue
+                # Parse ``ext:<bundle>:<Class>@<slot>``.  We need both pieces:
+                # the class name for twin-matching, and the bundle name to
+                # guard against cross-bundle display_name collisions.
+                ext_bundle = ""
+                class_name = ""
+                try:
+                    parts = ext_key.split(":", 2)
+                    ext_bundle = parts[1]
+                    class_name = parts[2].rsplit("@", 1)[0]
+                except (IndexError, ValueError):
+                    pass
+                twin_key: str | None = None
+                # First try matching the class name and its Component-suffix
+                # variants (covers ``OpenAIModelComponent`` <-> ``OpenAIModel``).
+                candidates: list[str] = []
+                if class_name:
+                    candidates.append(class_name)
+                    if class_name.endswith("Component"):
+                        candidates.append(class_name[: -len("Component")])
+                    else:
+                        candidates.append(class_name + "Component")
+                for candidate in candidates:
+                    if candidate != ext_key and candidate in category_items:
+                        twin_key = candidate
+                        break
+                # Fallback: match on ``display_name`` (covers cases where
+                # ``obj.name`` diverges from the class name, e.g.
+                # ``PineconeVectorStoreComponent`` registers as ``Pinecone``).
+                # Guard against cross-bundle false matches: if the bare twin
+                # carries a ``bundle`` field already (from a prior extension
+                # entry), require it to match the bundle parsed from
+                # ``ext_key``.  Without this guard, two unrelated bundles
+                # registering components with the same generic display_name
+                # (e.g. ``"Embeddings"``) under the same category would
+                # transplant fields onto the wrong template.
+                if twin_key is None:
+                    dn = ext_template.get("display_name")
+                    if isinstance(dn, str) and dn in display_name_to_bare:
+                        candidate = display_name_to_bare[dn]
+                        candidate_template = category_items.get(candidate)
+                        if isinstance(candidate_template, dict):
+                            candidate_bundle = candidate_template.get("bundle")
+                            if ext_bundle and candidate_bundle and candidate_bundle != ext_bundle:
+                                await logger.adebug(
+                                    "Cache dedup: rejecting display_name match for %r "
+                                    "(twin %r belongs to bundle %r, not %r)",
+                                    ext_key,
+                                    candidate,
+                                    candidate_bundle,
+                                    ext_bundle,
+                                )
+                            else:
+                                twin_key = candidate
+                if twin_key is None:
+                    # Orphan ext: entry with no bare-name twin.  Drop when
+                    # the display_name strongly suggests a base class that
+                    # the bundle walk correctly excluded (via
+                    # ``code_class_base_inheritance is None``) but the
+                    # extension loader picked up anyway.
+                    #
+                    # The frontend-node serializer (FrontendNode.process_display_name)
+                    # falls back to ``self.name`` when ``display_name`` is
+                    # falsy upstream.  ``self.name`` defaults to the class
+                    # name, and for an un-named base class it bottoms out
+                    # at the literal string ``"Component"``.  So we drop
+                    # any of: falsy display_name, ``"Component"``, or the
+                    # parsed class_name itself -- all three indicate the
+                    # upstream class set ``display_name = False`` and the
+                    # serializer fell through to ``self.name``.
+                    dn = ext_template.get("display_name")
+                    is_base_class_leak = not dn or dn == "Component" or (class_name and dn == class_name)
+                    if is_base_class_leak:
+                        del category_items[ext_key]
+                    continue
+                twin = category_items[twin_key]
+                if isinstance(twin, dict):
+                    for field in ("namespaced_id", "bundle", "extension", "extension_version"):
+                        if field in ext_template and field not in twin:
+                            twin[field] = ext_template[field]
+                del category_items[ext_key]
+
+        component_cache.all_types_dict = merged
         component_count = sum(len(comps) for comps in component_cache.all_types_dict.values())
         await logger.adebug(f"Loaded {component_count} components")
 

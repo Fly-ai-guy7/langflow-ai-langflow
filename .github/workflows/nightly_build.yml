@@ -165,6 +165,8 @@ jobs:
           uv run --no-sync ./scripts/ci/update_sdk_version.py $SDK_TAG
           echo "Updating LFX project version to $LFX_TAG"
           uv run --no-sync ./scripts/ci/update_lfx_version.py $LFX_TAG $SDK_TAG
+          echo "Renaming bundle packages to their -nightly counterparts (lfx dev suffix: $LFX_TAG)"
+          uv run --no-sync ./scripts/ci/update_bundle_versions.py $LFX_TAG
           echo "Updating base project version to $BASE_TAG and updating main project version to $RELEASE_TAG"
           uv run --no-sync ./scripts/ci/update_pyproject_combined.py main $RELEASE_TAG $BASE_TAG $LFX_TAG
 

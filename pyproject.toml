@@ -22,7 +22,92 @@ dependencies = [
     "lfx-duckduckgo>=0.1.0",
     "lfx-arxiv>=0.1.0",
     "lfx-ibm>=0.1.0",
+    "lfx-datastax>=0.1.0",
+    "lfx-wikipedia>=0.1.0",
+    "lfx-wolframalpha>=0.1.0",
+    "lfx-serpapi>=0.1.0",
+    "lfx-tavily>=0.1.0",
+    "lfx-youtube>=0.1.0",
+    "lfx-exa>=0.1.0",
+    "lfx-bing>=0.1.0",
+    "lfx-baidu>=0.1.0",
+    "lfx-firecrawl>=0.1.0",
+    "lfx-glean>=0.1.0",
+    "lfx-scrapegraph>=0.1.0",
+    "lfx-searchapi>=0.1.0",
+    "lfx-jigsawstack>=0.1.0",
+    "lfx-needle>=0.1.0",
+    "lfx-openai>=0.1.0",
+    "lfx-aiml>=0.1.0",
+    "lfx-amazon>=0.1.0",
+    "lfx-anthropic>=0.1.0",
+    "lfx-azure>=0.1.0",
+    "lfx-cohere>=0.1.0",
+    "lfx-deepseek>=0.1.0",
+    "lfx-groq>=0.1.0",
+    "lfx-huggingface>=0.1.0",
+    "lfx-litellm>=0.1.0",
+    "lfx-lmstudio>=0.1.0",
+    "lfx-maritalk>=0.1.0",
+    "lfx-mistral>=0.1.0",
+    "lfx-notdiamond>=0.1.0",
+    "lfx-novita>=0.1.0",
+    "lfx-nvidia>=0.1.0",
+    "lfx-ollama>=0.1.0",
+    "lfx-openrouter>=0.1.0",
+    "lfx-perplexity>=0.1.0",
+    "lfx-sambanova>=0.1.0",
+    "lfx-vertexai>=0.1.0",
+    "lfx-xai>=0.1.0",
+    "lfx-cometapi>=0.1.0",
+    "lfx-vllm>=0.1.0",
+    "lfx-cassandra>=0.1.0",
+    "lfx-chroma>=0.1.0",
+    "lfx-clickhouse>=0.1.0",
+    "lfx-couchbase>=0.1.0",
+    "lfx-elastic>=0.1.0",
+    "lfx-faiss>=0.1.0",
+    "lfx-milvus>=0.1.0",
+    "lfx-mongodb>=0.1.0",
+    "lfx-pgvector>=0.1.0",
+    "lfx-pinecone>=0.1.0",
+    "lfx-qdrant>=0.1.0",
+    "lfx-redis>=0.1.0",
+    "lfx-supabase>=0.1.0",
+    "lfx-upstash>=0.1.0",
+    "lfx-vectara>=0.1.0",
+    "lfx-weaviate>=0.1.0",
+    "lfx-zep>=0.1.0",
+    "lfx-notion>=0.1.0",
+    "lfx-agentql>=0.1.0",
+    "lfx-apify>=0.1.0",
+    "lfx-assemblyai>=0.1.0",
+    "lfx-cleanlab>=0.1.0",
+    "lfx-cloudflare>=0.1.0",
+    "lfx-composio>=0.1.0",
+    "lfx-confluence>=0.1.0",
     "lfx-docling>=0.1.0",
+    "lfx-git>=0.1.0",
+    "lfx-homeassistant>=0.1.0",
+    "lfx-icosacomputing>=0.1.0",
+    "lfx-langwatch>=0.1.0",
+    "lfx-mem0>=0.1.0",
+    "lfx-twelvelabs>=0.1.0",
+    "lfx-unstructured>=0.1.0",
+    "lfx-agentics>=0.1.0",
+    "lfx-altk>=0.1.0",
+    "lfx-codeagents>=0.1.0",
+    "lfx-crewai>=0.1.0",
+    "lfx-cuga>=0.1.0",
+    "lfx-olivya>=0.1.0",
+    "lfx-vlmrun>=0.1.0",
+    # Google split (4 bundles from the in-tree ``google/`` directory):
+    # GenAI (Gemini chat + embeddings), Workspace (Gmail, Drive, OAuth),
+    # BigQuery (SQL executor), and Search (Search + Serper).
+    "lfx-google-genai>=0.1.0",
+    "lfx-google-workspace>=0.1.0",
+    "lfx-google-bigquery>=0.1.0",
+    "lfx-google-search>=0.1.0",
     # langflow-extensions:bundle-deps-end
 ]
 
@@ -82,8 +167,90 @@ langflow-sdk = { workspace = true }
 # langflow-extensions:bundle-sources-start
 lfx-duckduckgo = { workspace = true }
 lfx-arxiv = { workspace = true }
+lfx-datastax = { workspace = true }
 lfx-ibm = { workspace = true }
+lfx-wikipedia = { workspace = true }
+lfx-wolframalpha = { workspace = true }
+lfx-serpapi = { workspace = true }
+lfx-tavily = { workspace = true }
+lfx-youtube = { workspace = true }
+lfx-exa = { workspace = true }
+lfx-bing = { workspace = true }
+lfx-baidu = { workspace = true }
+lfx-firecrawl = { workspace = true }
+lfx-glean = { workspace = true }
+lfx-scrapegraph = { workspace = true }
+lfx-searchapi = { workspace = true }
+lfx-jigsawstack = { workspace = true }
+lfx-needle = { workspace = true }
+lfx-openai = { workspace = true }
+lfx-aiml = { workspace = true }
+lfx-amazon = { workspace = true }
+lfx-anthropic = { workspace = true }
+lfx-azure = { workspace = true }
+lfx-cohere = { workspace = true }
+lfx-deepseek = { workspace = true }
+lfx-groq = { workspace = true }
+lfx-huggingface = { workspace = true }
+lfx-litellm = { workspace = true }
+lfx-lmstudio = { workspace = true }
+lfx-maritalk = { workspace = true }
+lfx-mistral = { workspace = true }
+lfx-notdiamond = { workspace = true }
+lfx-novita = { workspace = true }
+lfx-nvidia = { workspace = true }
+lfx-ollama = { workspace = true }
+lfx-openrouter = { workspace = true }
+lfx-perplexity = { workspace = true }
+lfx-sambanova = { workspace = true }
+lfx-vertexai = { workspace = true }
+lfx-xai = { workspace = true }
+lfx-cometapi = { workspace = true }
+lfx-vllm = { workspace = true }
+lfx-cassandra = { workspace = true }
+lfx-chroma = { workspace = true }
+lfx-clickhouse = { workspace = true }
+lfx-couchbase = { workspace = true }
+lfx-elastic = { workspace = true }
+lfx-faiss = { workspace = true }
+lfx-milvus = { workspace = true }
+lfx-mongodb = { workspace = true }
+lfx-pgvector = { workspace = true }
+lfx-pinecone = { workspace = true }
+lfx-qdrant = { workspace = true }
+lfx-redis = { workspace = true }
+lfx-supabase = { workspace = true }
+lfx-upstash = { workspace = true }
+lfx-vectara = { workspace = true }
+lfx-weaviate = { workspace = true }
+lfx-zep = { workspace = true }
+lfx-notion = { workspace = true }
+lfx-agentql = { workspace = true }
+lfx-apify = { workspace = true }
+lfx-assemblyai = { workspace = true }
+lfx-cleanlab = { workspace = true }
+lfx-cloudflare = { workspace = true }
+lfx-composio = { workspace = true }
+lfx-confluence = { workspace = true }
 lfx-docling = { workspace = true }
+lfx-git = { workspace = true }
+lfx-homeassistant = { workspace = true }
+lfx-icosacomputing = { workspace = true }
+lfx-langwatch = { workspace = true }
+lfx-mem0 = { workspace = true }
+lfx-twelvelabs = { workspace = true }
+lfx-unstructured = { workspace = true }
+lfx-agentics = { workspace = true }
+lfx-altk = { workspace = true }
+lfx-codeagents = { workspace = true }
+lfx-crewai = { workspace = true }
+lfx-cuga = { workspace = true }
+lfx-olivya = { workspace = true }
+lfx-vlmrun = { workspace = true }
+lfx-google-genai = { workspace = true }
+lfx-google-workspace = { workspace = true }
+lfx-google-bigquery = { workspace = true }
+lfx-google-search = { workspace = true }
 # langflow-extensions:bundle-sources-end
 torch = { index = "pytorch-cpu" }
 torchvision = { index = "pytorch-cpu" }
@@ -99,7 +266,89 @@ members = [
     "src/bundles/duckduckgo",
     "src/bundles/arxiv",
     "src/bundles/ibm",
+    "src/bundles/datastax",
+    "src/bundles/wikipedia",
+    "src/bundles/wolframalpha",
+    "src/bundles/serpapi",
+    "src/bundles/tavily",
+    "src/bundles/youtube",
+    "src/bundles/exa",
+    "src/bundles/bing",
+    "src/bundles/baidu",
+    "src/bundles/firecrawl",
+    "src/bundles/glean",
+    "src/bundles/scrapegraph",
+    "src/bundles/searchapi",
+    "src/bundles/jigsawstack",
+    "src/bundles/needle",
+    "src/bundles/openai",
+    "src/bundles/aiml",
+    "src/bundles/amazon",
+    "src/bundles/anthropic",
+    "src/bundles/azure",
+    "src/bundles/cohere",
+    "src/bundles/deepseek",
+    "src/bundles/groq",
+    "src/bundles/huggingface",
+    "src/bundles/litellm",
+    "src/bundles/lmstudio",
+    "src/bundles/maritalk",
+    "src/bundles/mistral",
+    "src/bundles/notdiamond",
+    "src/bundles/novita",
+    "src/bundles/nvidia",
+    "src/bundles/ollama",
+    "src/bundles/openrouter",
+    "src/bundles/perplexity",
+    "src/bundles/sambanova",
+    "src/bundles/vertexai",
+    "src/bundles/xai",
+    "src/bundles/cometapi",
+    "src/bundles/vllm",
+    "src/bundles/cassandra",
+    "src/bundles/chroma",
+    "src/bundles/clickhouse",
+    "src/bundles/couchbase",
+    "src/bundles/elastic",
+    "src/bundles/faiss",
+    "src/bundles/milvus",
+    "src/bundles/mongodb",
+    "src/bundles/pgvector",
+    "src/bundles/pinecone",
+    "src/bundles/qdrant",
+    "src/bundles/redis",
+    "src/bundles/supabase",
+    "src/bundles/upstash",
+    "src/bundles/vectara",
+    "src/bundles/weaviate",
+    "src/bundles/zep",
+    "src/bundles/notion",
+    "src/bundles/agentql",
+    "src/bundles/apify",
+    "src/bundles/assemblyai",
+    "src/bundles/cleanlab",
+    "src/bundles/cloudflare",
+    "src/bundles/composio",
+    "src/bundles/confluence",
     "src/bundles/docling",
+    "src/bundles/git",
+    "src/bundles/homeassistant",
+    "src/bundles/icosacomputing",
+    "src/bundles/langwatch",
+    "src/bundles/mem0",
+    "src/bundles/twelvelabs",
+    "src/bundles/unstructured",
+    "src/bundles/agentics",
+    "src/bundles/altk",
+    "src/bundles/codeagents",
+    "src/bundles/crewai",
+    "src/bundles/cuga",
+    "src/bundles/olivya",
+    "src/bundles/vlmrun",
+    "src/bundles/google_genai",
+    "src/bundles/google_workspace",
+    "src/bundles/google_bigquery",
+    "src/bundles/google_search",
     # langflow-extensions:bundle-members-end
 ]
 
@@ -342,17 +591,11 @@ external = ["RUF027"]
 "src/lfx/src/lfx/components/data/save_file.py" = [
     "SLF001",  # Google API client private member access
 ]
-"src/lfx/src/lfx/components/datastax/astradb_vectorstore.py" = [
-    "S110",  # Try-except-pass for optional metadata
-]
 "src/lfx/src/lfx/components/google/google_generative_ai_embeddings.py" = [
     "SLF001",  # Google AI library private member access
 ]
 "src/lfx/src/lfx/components/knowledge_bases/retrieval.py" = [
     "SLF001",  # Chroma client private member access
-]
-"src/lfx/src/lfx/components/mongodb/mongodb_atlas.py" = [
-    "SLF001",  # MongoDB collection private member access
 ]
 "src/lfx/src/lfx/components/tools/{python_code_structured_tool.py,searxng.py}" = [
     "S102",  # Use of exec/eval for dynamic code execution
