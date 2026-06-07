@@ -4,12 +4,13 @@ import asyncio
 import json
 import uuid
 from types import UnionType
-from typing import Any, get_args, get_origin
+from typing import Any, ClassVar, get_args, get_origin
 
 from langchain_core.tools import StructuredTool  # noqa: TC002
 from pydantic import BaseModel
 
 from lfx.base.agents.utils import maybe_unflatten_dict, safe_cache_get, safe_cache_set
+from lfx.base.mcp.trust import TrustVerifier  # noqa: TC001
 from lfx.base.mcp.util import (
     MCPStdioClient,
     MCPStreamableHttpClient,
@@ -56,6 +57,11 @@ class MCPToolsComponent(ComponentWithCache):
     _not_load_actions: bool = False
     _tool_cache: dict = {}
     _last_selected_server: str | None = None  # Cache for the last selected server
+
+    # Opt-in trust verifier - set by callers that want pre-dispatch trust checks.
+    # When None (the default), the hook is skipped with zero overhead.
+    # ClassVar keeps Pydantic from treating this as a model field (and from the JSON schema).
+    trust_verifier: ClassVar[TrustVerifier | None] = None
 
     def __init__(self, **data) -> None:
         super().__init__(**data)
@@ -325,6 +331,7 @@ class MCPToolsComponent(ComponentWithCache):
                 mcp_stdio_client=self.stdio_client,
                 mcp_streamable_http_client=self.streamable_http_client,
                 request_variables=request_variables,
+                trust_verifier=self.trust_verifier,
             )
 
             self.tool_names = [tool.name for tool in tool_list if hasattr(tool, "name")]
